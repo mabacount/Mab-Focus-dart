@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/txt_logger_service.dart';
+import 'dart:typed_data';
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -173,14 +174,14 @@ class _SettingsTabState extends State<SettingsTab> {
                             icon: const Icon(Icons.folder_open_rounded),
                             label: const Text('تغییر مسیر فایل .txt'),
                             onPressed: () async {
-                              final selected = await FilePicker.saveFile(
+                              final String? selectedPath =
+                                  await FilePicker.platform.saveFile(
                                 dialogTitle: 'انتخاب مسیر فایل لاگ متنی خودکار',
                                 fileName: AppDefaults.defaultTxtFileName,
-                                type: FileType.custom,
-                                allowedExtensions: ['txt'],
                               );
-                              if (selected != null) {
-                                await provider.updateTxtLogPath(selected);
+                              if (selectedPath != null &&
+                                  selectedPath.isNotEmpty) {
+                                await provider.updateTxtLogPath(selectedPath);
                                 await _loadTxtPreview();
                               }
                             },

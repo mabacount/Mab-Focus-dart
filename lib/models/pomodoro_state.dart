@@ -1,5 +1,4 @@
-// وضعیت لحظه‌ای تایمر پومودورو، اضافه‌کاری منفی و حالت پنجره
-enum PomodoroMode { focus, shortBreak, longBreak }
+enum PomodoroMode { focus, shortBreak, longBreak, stopwatch }
 
 enum TimerStatus { idle, running, paused, overtime }
 
@@ -25,7 +24,7 @@ class PomodoroState {
     this.mode = PomodoroMode.focus,
     this.status = TimerStatus.idle,
     this.elapsedSeconds = 0,
-    this.targetSeconds = 1500, // 25 دقیقه
+    this.targetSeconds = 1500,
     this.completedSetsInCycle = 0,
     this.overtimeSeconds = 0,
     this.lastNudgeAtOvertimeSeconds = 0,
@@ -33,17 +32,30 @@ class PomodoroState {
     this.activeTaskId,
   });
 
-  int get remainingSeconds => targetSeconds - elapsedSeconds;
+  bool get isStopwatch => mode == PomodoroMode.stopwatch;
+  bool get isLifeSanctuaryLock => mode == PomodoroMode.longBreak;
   bool get isOvertime =>
-      status == TimerStatus.overtime || elapsedSeconds > targetSeconds;
+      status == TimerStatus.overtime ||
+      (mode != PomodoroMode.stopwatch && elapsedSeconds > targetSeconds);
+  int get remainingSeconds => targetSeconds - elapsedSeconds;
 
   double get progress {
+    if (isStopwatch) return 1.0;
     if (targetSeconds <= 0) return 0.0;
-    final double p = elapsedSeconds / targetSeconds;
-    return p.clamp(0.0, 1.0);
+    return (elapsedSeconds / targetSeconds).clamp(0.0, 1.0);
   }
 
   String get formattedDisplayTime {
+    if (isStopwatch) {
+      final int h = elapsedSeconds ~/ 3600;
+      final int m = (elapsedSeconds % 3600) ~/ 60;
+      final int s = elapsedSeconds % 60;
+      if (h > 0) {
+        return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+      }
+      return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+    }
+
     if (isOvertime) {
       final int extra = (elapsedSeconds - targetSeconds).abs();
       final int m = extra ~/ 60;

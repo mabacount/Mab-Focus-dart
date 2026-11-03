@@ -1,4 +1,3 @@
-// متدهای تغییر شکل پنجره ویندوز، نوار لبه‌ای و Always-on-Top
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:screen_retriever/screen_retriever.dart';
@@ -15,13 +14,13 @@ class PlatformHelper {
     await windowManager.ensureInitialized();
 
     const WindowOptions windowOptions = WindowOptions(
-      size: Size(1150, 760),
+      size: Size(1180, 780),
       minimumSize: Size(18, 160),
       center: true,
       backgroundColor: AppColors.background,
       skipTaskbar: false,
       titleBarStyle: TitleBarStyle.normal,
-      title: 'Mab-Focus — Dashboard',
+      title: 'Mab-Focus v3.0 — Life Capacity OS',
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
@@ -36,21 +35,29 @@ class PlatformHelper {
     await windowManager.setTitleBarStyle(TitleBarStyle.normal);
     await windowManager.setBackgroundColor(AppColors.background);
     await windowManager.setResizable(true);
-    await windowManager.setSize(const Size(1150, 760));
+    await windowManager.setHasShadow(true);
+    await windowManager.setSize(const Size(1180, 780));
     await windowManager.center();
   }
 
-  static Future<void> switchToFloatingWidgetMode(
-      {bool expanded = false}) async {
+  static Future<void> switchToFloatingWidgetMode({
+    bool isHovered = false,
+    bool isSheetExpanded = false,
+  }) async {
     if (!isDesktop) return;
-    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    await windowManager.setAsFrameless();
     await windowManager.setBackgroundColor(Colors.transparent);
+    await windowManager.setHasShadow(false);
     await windowManager.setAlwaysOnTop(true);
-    await windowManager.setSkipTaskbar(false);
     await windowManager.setResizable(false);
-    final Size targetSize =
-        expanded ? const Size(320, 440) : const Size(220, 220);
-    await windowManager.setSize(targetSize);
+
+    if (isSheetExpanded) {
+      await windowManager.setSize(const Size(320, 440));
+    } else if (isHovered) {
+      await windowManager.setSize(const Size(190, 175));
+    } else {
+      await windowManager.setSize(const Size(116, 116));
+    }
   }
 
   static Future<void> switchToEdgeDockedMode(bool isLeft) async {
@@ -58,8 +65,9 @@ class PlatformHelper {
     final display = await screenRetriever.getPrimaryDisplay();
     final Offset currentPos = await windowManager.getPosition();
 
-    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    await windowManager.setAsFrameless();
     await windowManager.setBackgroundColor(Colors.transparent);
+    await windowManager.setHasShadow(false);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setResizable(false);
     await windowManager.setSize(const Size(18, 160));

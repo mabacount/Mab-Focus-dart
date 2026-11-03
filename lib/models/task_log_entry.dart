@@ -1,10 +1,12 @@
-// مدل لاگ کارکرد، فیلدهای ممیزی ویرایش [Edited] و وضعیت همگام‌سازی
 import 'dart:convert';
 
 class TaskLogEntry {
   final String id;
+  final String groupId;
+  final String entryType; // 'work' | 'stopwatch' | 'short_break' | 'long_break'
   final String title;
   final bool isUntitledDraft;
+  final bool isCompleted;
   final String? macroProjectId;
   final String? subProjectId;
   final List<String> tagIds;
@@ -14,7 +16,7 @@ class TaskLogEntry {
   final int overtimeSeconds;
   final int pomodoroSetIndex;
 
-  // فیلدهای ممیزی ویرایش ([Edited])
+  // فیلدهای ممیزی ویرایش
   final bool isEdited;
   final DateTime? originalStartTime;
   final DateTime? originalEndTime;
@@ -22,14 +24,18 @@ class TaskLogEntry {
   final DateTime? editedAt;
   final String? editNote;
 
-  // فیلدهای همگام‌سازی تقویم
+  // فیلدهای تقویم گوگل
   final String syncStatus; // 'pending' | 'synced' | 'failed'
   final String? calendarEventId;
+  final String? targetCalendarId;
 
   const TaskLogEntry({
     required this.id,
+    required this.groupId,
+    this.entryType = 'work',
     this.title = 'تسک بدون عنوان',
     this.isUntitledDraft = true,
+    this.isCompleted = false,
     this.macroProjectId,
     this.subProjectId,
     this.tagIds = const [],
@@ -46,13 +52,23 @@ class TaskLogEntry {
     this.editNote,
     this.syncStatus = 'pending',
     this.calendarEventId,
+    this.targetCalendarId,
   });
+
+  bool get isBreakEntry =>
+      entryType == 'short_break' || entryType == 'long_break';
+  bool get isStopwatch => entryType == 'stopwatch';
+  bool get isWork => entryType == 'work';
+  String? get effectiveProjectId => subProjectId ?? macroProjectId;
 
   Map<String, dynamic> toMap() {
     return {
       'id': id,
+      'group_id': groupId,
+      'entry_type': entryType,
       'title': title,
       'is_untitled_draft': isUntitledDraft ? 1 : 0,
+      'is_completed': isCompleted ? 1 : 0,
       'macro_project_id': macroProjectId,
       'sub_project_id': subProjectId,
       'tag_ids_json': jsonEncode(tagIds),
@@ -69,27 +85,31 @@ class TaskLogEntry {
       'edit_note': editNote,
       'sync_status': syncStatus,
       'calendar_event_id': calendarEventId,
+      'target_calendar_id': targetCalendarId,
     };
   }
 
   factory TaskLogEntry.fromMap(Map<String, dynamic> map) {
-    List<String> parsedTagIds = [];
+    List<String> parsedTags = [];
     if (map['tag_ids_json'] != null) {
       try {
         final decoded = jsonDecode(map['tag_ids_json'] as String);
         if (decoded is List) {
-          parsedTagIds = decoded.map((e) => e.toString()).toList();
+          parsedTags = decoded.map((e) => e.toString()).toList();
         }
       } catch (_) {}
     }
 
     return TaskLogEntry(
       id: map['id'] as String,
+      groupId: map['group_id'] as String? ?? (map['id'] as String),
+      entryType: map['entry_type'] as String? ?? 'work',
       title: map['title'] as String? ?? 'تسک بدون عنوان',
       isUntitledDraft: (map['is_untitled_draft'] as int? ?? 0) == 1,
+      isCompleted: (map['is_completed'] as int? ?? 0) == 1,
       macroProjectId: map['macro_project_id'] as String?,
       subProjectId: map['sub_project_id'] as String?,
-      tagIds: parsedTagIds,
+      tagIds: parsedTags,
       startTime: DateTime.parse(map['start_time'] as String),
       endTime: map['end_time'] != null
           ? DateTime.parse(map['end_time'] as String)
@@ -111,13 +131,17 @@ class TaskLogEntry {
       editNote: map['edit_note'] as String?,
       syncStatus: map['sync_status'] as String? ?? 'pending',
       calendarEventId: map['calendar_event_id'] as String?,
+      targetCalendarId: map['target_calendar_id'] as String?,
     );
   }
 
   TaskLogEntry copyWith({
     String? id,
+    String? groupId,
+    String? entryType,
     String? title,
     bool? isUntitledDraft,
+    bool? isCompleted,
     String? macroProjectId,
     String? subProjectId,
     List<String>? tagIds,
@@ -134,11 +158,15 @@ class TaskLogEntry {
     String? editNote,
     String? syncStatus,
     String? calendarEventId,
+    String? targetCalendarId,
   }) {
     return TaskLogEntry(
       id: id ?? this.id,
+      groupId: groupId ?? this.groupId,
+      entryType: entryType ?? this.entryType,
       title: title ?? this.title,
       isUntitledDraft: isUntitledDraft ?? this.isUntitledDraft,
+      isCompleted: isCompleted ?? this.isCompleted,
       macroProjectId: macroProjectId ?? this.macroProjectId,
       subProjectId: subProjectId ?? this.subProjectId,
       tagIds: tagIds ?? this.tagIds,
@@ -156,6 +184,7 @@ class TaskLogEntry {
       editNote: editNote ?? this.editNote,
       syncStatus: syncStatus ?? this.syncStatus,
       calendarEventId: calendarEventId ?? this.calendarEventId,
+      targetCalendarId: targetCalendarId ?? this.targetCalendarId,
     );
   }
 }

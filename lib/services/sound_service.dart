@@ -1,4 +1,3 @@
-// پخش صدای زنگ پایان و تلنگرهای ارگونومیک اضافه‌کاری
 import 'dart:io';
 import 'package:flutter/services.dart';
 

@@ -1,4 +1,3 @@
-// نقطه ورود اپلیکیشن، مقداردهی اولیه SQLite FFI و WindowManager
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -6,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'core/constants.dart';
 import 'core/platform_helper.dart';
 import 'providers/app_state_provider.dart';
+import 'services/music_player_service.dart';
 import 'ui/app_shell.dart';
 
 Future<void> main() async {
@@ -16,8 +16,12 @@ Future<void> main() async {
   await appState.initialize();
 
   runApp(
-    ChangeNotifierProvider<AppStateProvider>.value(
-      value: appState,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<AppStateProvider>.value(value: appState),
+        ChangeNotifierProvider<MusicPlayerService>.value(
+            value: MusicPlayerService.instance),
+      ],
       child: const MabFocusApp(),
     ),
   );
@@ -28,12 +32,11 @@ class MabFocusApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final baseTextTheme = GoogleFonts.vazirmatnTextTheme(
-      ThemeData.dark().textTheme,
-    );
+    final baseTextTheme =
+        GoogleFonts.vazirmatnTextTheme(ThemeData.dark().textTheme);
 
     return MaterialApp(
-      title: 'Mab-Focus',
+      title: 'Mab-Focus v3.0',
       debugShowCheckedModeBanner: false,
       locale: const Locale('fa', 'IR'),
       supportedLocales: const [
