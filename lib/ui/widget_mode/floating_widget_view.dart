@@ -40,11 +40,16 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
 
   @override
   void onWindowMoved() async {
-    if (_isCheckingSnap || !mounted) return;
-    final provider = context.read<AppStateProvider>();
-    if (provider.pomodoroState.windowPosture != WindowPosture.floatingCircle)
+    if (_isCheckingSnap || !mounted) {
       return;
-    if (provider.isQuickMenuExpanded) return;
+    }
+    final provider = context.read<AppStateProvider>();
+    if (provider.pomodoroState.windowPosture != WindowPosture.floatingCircle) {
+      return;
+    }
+    if (provider.isQuickMenuExpanded) {
+      return;
+    }
 
     _isCheckingSnap = true;
     final snapPosture = await PlatformHelper.checkEdgeSnapCondition();
@@ -180,8 +185,9 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                             child: GestureDetector(
                               behavior: HitTestBehavior.opaque,
                               onPanStart: (_) {
-                                if (PlatformHelper.isDesktop)
+                                if (PlatformHelper.isDesktop) {
                                   windowManager.startDragging();
+                                }
                               },
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,

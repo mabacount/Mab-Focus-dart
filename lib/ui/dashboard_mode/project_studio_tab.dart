@@ -1,7 +1,9 @@
-// مدیریت درختی پروژه‌ها و کلیدهای احتساب استراحت
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 import '../../core/constants.dart';
+import '../../models/project_node.dart';
 import '../../providers/app_state_provider.dart';
 
 class ProjectStudioTab extends StatefulWidget {
@@ -12,20 +14,89 @@ class ProjectStudioTab extends StatefulWidget {
 }
 
 class _ProjectStudioTabState extends State<ProjectStudioTab> {
-  final TextEditingController _macroNameCtrl = TextEditingController();
-  final TextEditingController _subNameCtrl = TextEditingController();
-  final TextEditingController _tagNameCtrl = TextEditingController();
-
-  bool _newMacroCountShortBreak = false;
-  bool _newMacroCountLongBreak = false;
-  String? _selectedMacroForSub;
+  final TextEditingController _nameCtrl = TextEditingController();
+  final TextEditingController _weeklyQuotaCtrl = TextEditingController();
+  final TextEditingController _rateCtrl = TextEditingController();
+  String? _parentId;
+  bool _countShortBreak = false;
+  bool _countLongBreak = false;
 
   @override
   void dispose() {
-    _macroNameCtrl.dispose();
-    _subNameCtrl.dispose();
-    _tagNameCtrl.dispose();
+    _nameCtrl.dispose();
+    _weeklyQuotaCtrl.dispose();
+    _rateCtrl.dispose();
     super.dispose();
+  }
+
+  void _showProjectAnalytics(BuildContext context, ProjectNode project) {
+    final provider = context.read<AppStateProvider>();
+    final logs = provider.taskLogs
+        .where((l) =>
+            l.macroProjectId == project.id || l.subProjectId == project.id)
+        .toList();
+    final totalSec =
+        logs.fold<int>(0, (sum, item) => sum + item.durationSeconds);
+    final hours = (totalSec / 3600.0).toStringAsFixed(1);
+    final cost = ((totalSec / 3600.0) * project.hourlyRate).toStringAsFixed(0);
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Text('گزارش تحلیلی پروژه: ${project.name}',
+              style: const TextStyle(fontSize: 16)),
+          content: SizedBox(
+            width: 450,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _AnalyticPill(title: 'کل ساعت کارکرد', value: '$hours h'),
+                    _AnalyticPill(
+                        title: 'تعداد رکوردها', value: '${logs.length}'),
+                    if (project.hourlyRate > 0)
+                      _AnalyticPill(title: 'ارزش مالی', value: '$cost تومان'),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Text('آخرین فعالیت‌های این پروژه:',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 200,
+                  child: logs.isEmpty
+                      ? const Center(
+                          child: Text('رکوردی ثبت نشده است.',
+                              style: TextStyle(color: AppColors.textMuted)))
+                      : ListView.separated(
+                          itemCount: logs.length.clamp(0, 10),
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1, color: AppColors.border),
+                          itemBuilder: (_, i) => ListTile(
+                            dense: true,
+                            title: Text(logs[i].title),
+                            subtitle: Text(
+                                '${(logs[i].durationSeconds / 60).toStringAsFixed(1)} دقیقه'),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('بستن')),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -40,142 +111,122 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ۱. کارت تعریف پروژه کلان و قوانین احتساب استراحت
+              // فرم تعریف پروژه جدید
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'تعریف پروژه کلان جدید و سیاست محاسبه زمان استراحت',
-                        style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold),
-                      ),
+                      const Text('تعریف پروژه یا زیرپروژه جدید',
+                          style: TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(
+                            flex: 3,
                             child: TextField(
-                              controller: _macroNameCtrl,
+                              controller: _nameCtrl,
                               decoration: const InputDecoration(
-                                labelText:
-                                    'نام پروژه کلان (مثلاً: سامانه مالی کارفرما الف)',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
+                                  labelText: 'نام پروژه',
+                                  border: OutlineInputBorder(),
+                                  isDense: true),
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.add_rounded),
-                            label: const Text('افزودن پروژه کلان'),
-                            onPressed: () async {
-                              if (_macroNameCtrl.text.trim().isEmpty) return;
-                              await provider.saveProject(
-                                name: _macroNameCtrl.text.trim(),
-                                countShortBreaksAsWork:
-                                    _newMacroCountShortBreak,
-                                countLongBreaksAsWork: _newMacroCountLongBreak,
-                              );
-                              _macroNameCtrl.clear();
-                              setState(() {
-                                _newMacroCountShortBreak = false;
-                                _newMacroCountLongBreak = false;
-                              });
-                            },
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 2,
+                            child: DropdownButtonFormField<String?>(
+                              initialValue: _parentId,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                  labelText: 'مادر (خالی = کلان)',
+                                  border: OutlineInputBorder(),
+                                  isDense: true),
+                              dropdownColor: AppColors.surfaceElevated,
+                              items: [
+                                const DropdownMenuItem(
+                                    value: null,
+                                    child: Text('پروژه کلان اصلی')),
+                                ...macros.map((m) => DropdownMenuItem(
+                                    value: m.id, child: Text(m.name))),
+                              ],
+                              onChanged: (val) =>
+                                  setState(() => _parentId = val),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 2,
+                            child: TextField(
+                              controller: _weeklyQuotaCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                  labelText: 'بودجه هفتگی (دقیقه)',
+                                  border: OutlineInputBorder(),
+                                  isDense: true),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 2,
+                            child: TextField(
+                              controller: _rateCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                  labelText: 'نرخ ساعتی (تومان)',
+                                  border: OutlineInputBorder(),
+                                  isDense: true),
+                            ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 8),
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text(
-                          'محاسبه استراحت‌های کوتاه (۵ دقیقه‌ای) جزو ساعت کاری این پروژه',
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        value: _newMacroCountShortBreak,
-                        onChanged: (val) =>
-                            setState(() => _newMacroCountShortBreak = val),
-                      ),
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text(
-                          'محاسبه استراحت‌های طولانی (۶۰ دقیقه‌ای پایان چرخه) جزو ساعت کاری این پروژه',
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        value: _newMacroCountLongBreak,
-                        onChanged: (val) =>
-                            setState(() => _newMacroCountLongBreak = val),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // ۲. کارت افزودن زیرپروژه به پروژه‌های کلان
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'تعریف پروژه زیرمجموعه (Sub-Project)',
-                        style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(
-                            child: DropdownButtonFormField<String?>(
-                              initialValue: macros
-                                      .any((m) => m.id == _selectedMacroForSub)
-                                  ? _selectedMacroForSub
-                                  : null,
-                              decoration: const InputDecoration(
-                                labelText: 'انتخاب پروژه کلان مادر',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                              dropdownColor: AppColors.surfaceElevated,
-                              items: macros
-                                  .map((m) => DropdownMenuItem<String?>(
-                                      value: m.id, child: Text(m.name)))
-                                  .toList(),
+                            child: SwitchListTile(
+                              dense: true,
+                              title: const Text(
+                                  'محاسبه استراحت ۵ دقیقه‌ای جزو کارکرد',
+                                  style: TextStyle(fontSize: 12)),
+                              value: _countShortBreak,
                               onChanged: (val) =>
-                                  setState(() => _selectedMacroForSub = val),
+                                  setState(() => _countShortBreak = val),
                             ),
                           ),
-                          const SizedBox(width: 12),
                           Expanded(
-                            child: TextField(
-                              controller: _subNameCtrl,
-                              decoration: const InputDecoration(
-                                labelText:
-                                    'نام زیرپروژه (مثلاً: ماژول احراز هویت)',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
+                            child: SwitchListTile(
+                              dense: true,
+                              title: const Text(
+                                  'محاسبه استراحت ۶۰ دقیقه‌ای جزو کارکرد',
+                                  style: TextStyle(fontSize: 12)),
+                              value: _countLongBreak,
+                              onChanged: (val) =>
+                                  setState(() => _countLongBreak = val),
                             ),
                           ),
-                          const SizedBox(width: 12),
                           FilledButton.icon(
-                            icon: const Icon(
-                                Icons.subdirectory_arrow_left_rounded),
-                            label: const Text('افزودن زیرپروژه'),
+                            icon: const Icon(Icons.add, size: 16),
+                            label: const Text('ذخیره پروژه'),
                             onPressed: () async {
-                              if (_selectedMacroForSub == null ||
-                                  _subNameCtrl.text.trim().isEmpty) {
-                                return;
-                              }
-                              await provider.saveProject(
-                                name: _subNameCtrl.text.trim(),
-                                parentId: _selectedMacroForSub,
+                              if (_nameCtrl.text.trim().isEmpty) return;
+                              final node = ProjectNode(
+                                id: const Uuid().v4(),
+                                name: _nameCtrl.text.trim(),
+                                parentId: _parentId,
+                                weeklyQuotaMinutes:
+                                    int.tryParse(_weeklyQuotaCtrl.text) ?? 0,
+                                hourlyRate:
+                                    double.tryParse(_rateCtrl.text) ?? 0.0,
+                                countShortBreaksAsWork: _countShortBreak,
+                                countLongBreaksAsWork: _countLongBreak,
                               );
-                              _subNameCtrl.clear();
+                              await provider.saveProject(node);
+                              _nameCtrl.clear();
+                              _weeklyQuotaCtrl.clear();
+                              _rateCtrl.clear();
                             },
                           ),
                         ],
@@ -186,145 +237,89 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
               ),
               const SizedBox(height: 16),
 
-              // ۳. درخت پروژه‌های کلان و ویرایش زنده قانون استراحت هر پروژه
+              // فهرست پروژه‌ها
               const Text(
-                'فهرست پروژه‌های کلان و زیرمجموعه‌ها',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-              ),
+                  'فهرست پروژه‌ها (روی هر پروژه کلیک کنید تا تحلیل آن را ببینید)',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               ...macros.map((macro) {
-                final subProjects = provider.getSubProjects(macro.id);
+                final subs = provider.getSubProjects(macro.id);
                 return Card(
-                  margin: const EdgeInsets.only(bottom: 10),
                   child: ExpansionTile(
-                    title: Text(macro.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(
-                      'زیرپروژه‌ها: ${subProjects.length}  |  استراحت کوتاه جزو کار: ${macro.countShortBreaksAsWork ? 'بله' : 'خیر'}  |  استراحت طولانی جزو کار: ${macro.countLongBreaksAsWork ? 'بله' : 'خیر'}',
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary),
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          color: Colors.redAccent),
-                      onPressed: () => provider.deleteProject(macro.id),
-                    ),
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        child: Column(
-                          children: [
-                            SwitchListTile(
-                              dense: true,
-                              title: const Text(
-                                  'احتساب استراحت ۵ دقیقه‌ای جزو کارکرد این پروژه'),
-                              value: macro.countShortBreaksAsWork,
-                              onChanged: (val) {
-                                provider.saveProject(
-                                  id: macro.id,
-                                  name: macro.name,
-                                  countShortBreaksAsWork: val,
-                                  countLongBreaksAsWork:
-                                      macro.countLongBreaksAsWork,
-                                  colorHex: macro.colorHex,
-                                );
-                              },
-                            ),
-                            SwitchListTile(
-                              dense: true,
-                              title: const Text(
-                                  'احتساب استراحت ۶۰ دقیقه‌ای جزو کارکرد این پروژه'),
-                              value: macro.countLongBreaksAsWork,
-                              onChanged: (val) {
-                                provider.saveProject(
-                                  id: macro.id,
-                                  name: macro.name,
-                                  countShortBreaksAsWork:
-                                      macro.countShortBreaksAsWork,
-                                  countLongBreaksAsWork: val,
-                                  colorHex: macro.colorHex,
-                                );
-                              },
-                            ),
-                            if (subProjects.isNotEmpty)
-                              const Divider(color: AppColors.border),
-                            ...subProjects.map(
-                              (sub) => ListTile(
-                                dense: true,
-                                leading: const Icon(
-                                    Icons.subdirectory_arrow_left_rounded,
-                                    size: 18),
-                                title: Text(sub.name),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.close,
-                                      size: 16, color: Colors.redAccent),
-                                  onPressed: () =>
-                                      provider.deleteProject(sub.id),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                    title: InkWell(
+                      onTap: () => _showProjectAnalytics(context, macro),
+                      child: Row(
+                        children: [
+                          Text(macro.name,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
+                          const SizedBox(width: 8),
+                          const Icon(Icons.analytics_outlined,
+                              size: 16, color: AppColors.focus),
+                        ],
                       ),
-                    ],
+                    ),
+                    subtitle: Text(
+                        'وضعیت: ${macro.status} | زیرپروژه‌ها: ${subs.length}'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                              macro.isSuspended
+                                  ? Icons.play_arrow
+                                  : Icons.pause,
+                              size: 18),
+                          tooltip:
+                              macro.isSuspended ? 'فعال کردن' : 'معلق کردن',
+                          onPressed: () => provider.saveProject(macro.copyWith(
+                              status:
+                                  macro.isSuspended ? 'active' : 'suspended')),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline,
+                              size: 18, color: Colors.redAccent),
+                          onPressed: () => provider.deleteProject(macro.id),
+                        ),
+                      ],
+                    ),
+                    children: subs
+                        .map((sub) => ListTile(
+                              dense: true,
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 24),
+                              title: Text('↳ ${sub.name}'),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.close,
+                                    size: 16, color: Colors.redAccent),
+                                onPressed: () => provider.deleteProject(sub.id),
+                              ),
+                            ))
+                        .toList(),
                   ),
                 );
               }),
 
               const SizedBox(height: 16),
-
-              // ۴. مدیریت تگ‌های فاز کاری
+              // تگ‌های فاز کاری
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'مدیریت تگ‌های فاز کاری و وضعیت',
-                        style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _tagNameCtrl,
-                              decoration: const InputDecoration(
-                                labelText:
-                                    'عنوان تگ جدید (مثلاً: تست و بررسی کیفیت)',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.label_outline_rounded),
-                            label: const Text('افزودن تگ'),
-                            onPressed: () async {
-                              if (_tagNameCtrl.text.trim().isEmpty) return;
-                              await provider.savePhaseTag(
-                                  name: _tagNameCtrl.text.trim());
-                              _tagNameCtrl.clear();
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
+                      const Text('تگ‌های فاز کاری',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
-                        runSpacing: 8,
                         children: tags
-                            .map(
-                              (t) => Chip(
-                                label: Text(t.name),
-                                backgroundColor: AppColors.surfaceElevated,
-                                onDeleted: () => provider.deletePhaseTag(t.id),
-                              ),
-                            )
+                            .map((t) => Chip(
+                                  label: Text(t.name),
+                                  onDeleted: () =>
+                                      provider.deletePhaseTag(t.id),
+                                ))
                             .toList(),
                       ),
                     ],
@@ -335,6 +330,29 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
           ),
         );
       },
+    );
+  }
+}
+
+class _AnalyticPill extends StatelessWidget {
+  final String title;
+  final String value;
+  const _AnalyticPill({required this.title, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(title,
+            style:
+                const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+        const SizedBox(height: 2),
+        Text(value,
+            style: GoogleFonts.jetBrainsMono(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: AppColors.focus)),
+      ],
     );
   }
 }

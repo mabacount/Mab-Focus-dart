@@ -5,7 +5,10 @@ import '../../core/constants.dart';
 import '../../core/platform_helper.dart';
 import '../../models/pomodoro_state.dart';
 import '../../providers/app_state_provider.dart';
+import '../../services/music_player_service.dart';
 import 'activity_log_tab.dart';
+import 'calendar_grid_tab.dart';
+import 'capacity_thieves_tab.dart';
 import 'project_studio_tab.dart';
 import 'settings_tab.dart';
 import 'untitled_inbox_tab.dart';
@@ -21,6 +24,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0;
 
   final List<Widget> _tabs = const [
+    CalendarGridTab(),
+    CapacityThievesTab(),
     ActivityLogTab(),
     UntitledInboxTab(),
     ProjectStudioTab(),
@@ -30,12 +35,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<AppStateProvider>();
+    final music = context.watch<MusicPlayerService>();
     final state = provider.pomodoroState;
     final untitledCount = provider.untitledDraftLogs.length;
-    final isWide = MediaQuery.of(context).size.width >= 800;
+    final isWide = MediaQuery.of(context).size.width >= 900;
 
     Color statusColor = AppColors.focus;
-    if (state.isOvertime) {
+    if (state.isStopwatch) {
+      statusColor = AppColors.stopwatch;
+    } else if (state.isOvertime) {
       statusColor = AppColors.overtime;
     } else if (state.mode != PomodoroMode.focus) {
       statusColor = AppColors.breakTime;
@@ -52,17 +60,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Container(
               width: 12,
               height: 12,
-              decoration: BoxDecoration(
-                color: statusColor,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 10),
-            const Text(
-              'Mab-Focus',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              decoration:
+                  BoxDecoration(color: statusColor, shape: BoxShape.circle),
             ),
             const SizedBox(width: 8),
+            const Text('Mab-Focus v3.0',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(width: 12),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -80,36 +84,93 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ),
-            const SizedBox(width: 10),
-            if (provider.activeTaskLog != null)
+            if (provider.activeTaskLog != null) ...[
+              const SizedBox(width: 12),
               Flexible(
                 child: Text(
-                  'در حال اجرا: ${provider.activeTaskLog!.title}',
+                  'فعال: ${provider.activeTaskLog!.title}',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontSize: 13, color: AppColors.textSecondary),
+                      fontSize: 12.5, color: AppColors.textSecondary),
                 ),
               ),
+            ],
           ],
         ),
         actions: [
-          // کنترل سریع تایمر از داخل هدر داشبورد
+          // مینی‌پلیر موسیقی ADHD در هدر
+          if (music.tracks.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceElevated,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      music.isPlaying
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      size: 18,
+                      color: AppColors.focus,
+                    ),
+                    onPressed: music.togglePlayPause,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                  const SizedBox(width: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 110),
+                    child: Text(
+                      music.currentTrack?.title ?? 'موسیقی تمرکز',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.skip_next_rounded,
+                        size: 18, color: AppColors.textSecondary),
+                    onPressed: music.nextTrack,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                  SizedBox(
+                    width: 70,
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        thumbShape:
+                            const RoundSliderThumbShape(enabledThumbRadius: 5),
+                        trackHeight: 2,
+                      ),
+                      child: Slider(
+                        value: music.volume,
+                        onChanged: music.setVolume,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
+
+          // کنترل‌های سریع تایمر
           IconButton(
-            tooltip: state.status == TimerStatus.running ||
-                    state.status == TimerStatus.overtime
-                ? 'توقف موقت تایمر'
-                : 'شروع فوری تایمر',
+            tooltip:
+                state.status == TimerStatus.running ? 'توقف موقت' : 'شروع کار',
             icon: Icon(
-              state.status == TimerStatus.running ||
-                      state.status == TimerStatus.overtime
+              state.status == TimerStatus.running
                   ? Icons.pause_circle_filled_rounded
                   : Icons.play_circle_fill_rounded,
               color: statusColor,
-              size: 28,
+              size: 26,
             ),
             onPressed: () {
-              if (state.status == TimerStatus.running ||
-                  state.status == TimerStatus.overtime) {
+              if (state.status == TimerStatus.running) {
                 provider.pauseTimer();
               } else if (state.status == TimerStatus.paused) {
                 provider.resumeTimer();
@@ -118,39 +179,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
               }
             },
           ),
-          if (state.status != TimerStatus.idle)
-            IconButton(
-              tooltip: state.mode == PomodoroMode.focus
-                  ? 'شروع استراحت'
-                  : 'پایان و بازنشانی',
-              icon: Icon(
-                state.mode == PomodoroMode.focus
-                    ? Icons.coffee_rounded
-                    : Icons.stop_circle_rounded,
-                color: AppColors.breakTime,
-              ),
-              onPressed: () {
-                if (state.mode == PomodoroMode.focus) {
-                  provider.startBreak();
-                } else {
-                  provider.stopAndResetSession();
-                }
-              },
+          IconButton(
+            tooltip: state.isStopwatch
+                ? 'توقف کرنومتر'
+                : 'کرنومتر آزاد (خواب و استراحت)',
+            icon: Icon(
+              Icons.timer_outlined,
+              color: state.isStopwatch
+                  ? AppColors.stopwatch
+                  : AppColors.textSecondary,
+              size: 22,
             ),
+            onPressed: () {
+              if (state.isStopwatch) {
+                provider.stopAndResetSession();
+              } else {
+                provider.startStopwatchMode();
+              }
+            },
+          ),
           const SizedBox(width: 8),
+
+          // دکمه بازگشت به ویجت شناور
           if (PlatformHelper.isDesktop)
             Padding(
               padding: const EdgeInsets.only(left: 14, right: 4),
               child: FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.focus,
-                  foregroundColor: Colors.white,
-                ),
+                style: FilledButton.styleFrom(backgroundColor: AppColors.focus),
                 onPressed: () =>
                     provider.setWindowPosture(WindowPosture.floatingCircle),
                 icon:
-                    const Icon(Icons.picture_in_picture_alt_rounded, size: 18),
-                label: const Text('تبدیل به ویجت شناور'),
+                    const Icon(Icons.picture_in_picture_alt_rounded, size: 16),
+                label: const Text('ویجت شناور', style: TextStyle(fontSize: 12)),
               ),
             ),
         ],
@@ -163,17 +223,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
               selectedIndex: _selectedIndex,
               onDestinationSelected: (idx) =>
                   setState(() => _selectedIndex = idx),
-              extended: MediaQuery.of(context).size.width >= 1050,
+              extended: MediaQuery.of(context).size.width >= 1150,
               selectedIconTheme: const IconThemeData(color: AppColors.focus),
               selectedLabelTextStyle: const TextStyle(
-                color: AppColors.focus,
-                fontWeight: FontWeight.bold,
-              ),
+                  color: AppColors.focus, fontWeight: FontWeight.bold),
               unselectedIconTheme:
                   const IconThemeData(color: AppColors.textSecondary),
               unselectedLabelTextStyle:
                   const TextStyle(color: AppColors.textSecondary),
               destinations: [
+                const NavigationRailDestination(
+                  icon: Icon(Icons.calendar_month_outlined),
+                  selectedIcon: Icon(Icons.calendar_month_rounded),
+                  label: Text('تقویم هوشمند (Google)'),
+                ),
+                const NavigationRailDestination(
+                  icon: Icon(Icons.pie_chart_outline_rounded),
+                  selectedIcon: Icon(Icons.pie_chart_rounded),
+                  label: Text('سند ظرفیت و سارقان زمان'),
+                ),
                 const NavigationRailDestination(
                   icon: Icon(Icons.table_chart_outlined),
                   selectedIcon: Icon(Icons.table_chart_rounded),
@@ -202,14 +270,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const NavigationRailDestination(
                   icon: Icon(Icons.settings_outlined),
                   selectedIcon: Icon(Icons.settings_rounded),
-                  label: Text('تنظیمات و همگام‌سازی'),
+                  label: Text('تنظیمات و موسیقی'),
                 ),
               ],
             ),
           if (isWide) const VerticalDivider(width: 1, color: AppColors.border),
-          Expanded(
-            child: _tabs[_selectedIndex],
-          ),
+          Expanded(child: _tabs[_selectedIndex]),
         ],
       ),
       bottomNavigationBar: isWide
@@ -221,35 +287,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   setState(() => _selectedIndex = idx),
               destinations: [
                 const NavigationDestination(
-                  icon: Icon(Icons.table_chart_outlined),
-                  selectedIcon: Icon(Icons.table_chart_rounded),
-                  label: 'تایم‌شیت',
-                ),
+                    icon: Icon(Icons.calendar_month_outlined), label: 'تقویم'),
+                const NavigationDestination(
+                    icon: Icon(Icons.pie_chart_outline_rounded),
+                    label: 'ظرفیت'),
+                const NavigationDestination(
+                    icon: Icon(Icons.table_chart_outlined), label: 'تایم‌شیت'),
                 NavigationDestination(
                   icon: Badge(
                     isLabelVisible: untitledCount > 0,
-                    backgroundColor: AppColors.draftWarning,
                     label: Text('$untitledCount'),
                     child: const Icon(Icons.inbox_outlined),
                   ),
-                  selectedIcon: Badge(
-                    isLabelVisible: untitledCount > 0,
-                    backgroundColor: AppColors.draftWarning,
-                    label: Text('$untitledCount'),
-                    child: const Icon(Icons.inbox_rounded),
-                  ),
-                  label: 'کارتابل نواقص',
+                  label: 'نواقص',
                 ),
                 const NavigationDestination(
-                  icon: Icon(Icons.account_tree_outlined),
-                  selectedIcon: Icon(Icons.account_tree_rounded),
-                  label: 'پروژه‌ها',
-                ),
+                    icon: Icon(Icons.account_tree_outlined), label: 'پروژه‌ها'),
                 const NavigationDestination(
-                  icon: Icon(Icons.settings_outlined),
-                  selectedIcon: Icon(Icons.settings_rounded),
-                  label: 'تنظیمات',
-                ),
+                    icon: Icon(Icons.settings_outlined), label: 'تنظیمات'),
               ],
             ),
     );

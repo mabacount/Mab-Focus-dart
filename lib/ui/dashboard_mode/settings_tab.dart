@@ -1,12 +1,11 @@
-// تنظیمات تایمرها، مسیر فایل متنی و همگام‌سازی تقویم
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants.dart';
 import '../../providers/app_state_provider.dart';
+import '../../services/music_player_service.dart';
 import '../../services/txt_logger_service.dart';
-import 'dart:typed_data';
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -16,296 +15,249 @@ class SettingsTab extends StatefulWidget {
 }
 
 class _SettingsTabState extends State<SettingsTab> {
-  late TextEditingController _focusCtrl;
-  late TextEditingController _shortBreakCtrl;
-  late TextEditingController _longBreakCtrl;
-  late TextEditingController _gcalTokenCtrl;
-  String _syncLevel = 'task';
-  String _txtPreviewContent = '';
-  bool _initialized = false;
+  final TextEditingController _focusCtrl = TextEditingController();
+  final TextEditingController _shortCtrl = TextEditingController();
+  final TextEditingController _longCtrl = TextEditingController();
+  final TextEditingController _gcalTokenCtrl = TextEditingController();
+  String _txtPreview = '';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_initialized) {
-      final provider = context.read<AppStateProvider>();
-      _focusCtrl =
-          TextEditingController(text: provider.focusDurationMinutes.toString());
-      _shortBreakCtrl = TextEditingController(
-          text: provider.shortBreakDurationMinutes.toString());
-      _longBreakCtrl = TextEditingController(
-          text: provider.longBreakDurationMinutes.toString());
-      _gcalTokenCtrl = TextEditingController(text: provider.gcalToken);
-      _syncLevel = provider.gcalSyncLevel;
-      _loadTxtPreview();
-      _initialized = true;
-    }
+  void initState() {
+    super.initState();
+    final p = context.read<AppStateProvider>();
+    _focusCtrl.text = p.focusDurationMinutes.toString();
+    _shortCtrl.text = p.shortBreakDurationMinutes.toString();
+    _longCtrl.text = p.longBreakDurationMinutes.toString();
+    _gcalTokenCtrl.text = p.gcalToken;
+    _loadPreview();
   }
 
-  Future<void> _loadTxtPreview() async {
-    final content = await TxtLoggerService.instance.readLogFileContent();
-    if (mounted) {
-      setState(() {
-        _txtPreviewContent = content;
-      });
-    }
+  Future<void> _loadPreview() async {
+    final c = await TxtLoggerService.instance.readLogFileContent();
+    if (mounted) setState(() => _txtPreview = c);
   }
 
   @override
   void dispose() {
     _focusCtrl.dispose();
-    _shortBreakCtrl.dispose();
-    _longBreakCtrl.dispose();
+    _shortCtrl.dispose();
+    _longCtrl.dispose();
     _gcalTokenCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<AppStateProvider>(
-      builder: (context, provider, _) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // ۱. تنظیمات زمان‌بندی چرخه پومودورو
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'تنظیمات زمان‌بندی موتور پومودورو (Freedium)',
-                        style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _focusCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'مدت تمرکز (دقیقه - پیش‌فرض ۲۵)',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextField(
-                              controller: _shortBreakCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'استراحت کوتاه (دقیقه - پیش‌فرض ۵)',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextField(
-                              controller: _longBreakCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText:
-                                    'استراحت طولانی ست چهارم (دقیقه - پیش‌فرض ۶۰)',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.save_outlined),
-                            label: const Text('ذخیره زمان‌بندی'),
-                            onPressed: () async {
-                              final f = int.tryParse(_focusCtrl.text) ?? 25;
-                              final s = int.tryParse(_shortBreakCtrl.text) ?? 5;
-                              final l = int.tryParse(_longBreakCtrl.text) ?? 60;
-                              await provider.updateTimerSettings(
-                                focusMinutes: f.clamp(1, 240),
-                                shortBreakMinutes: s.clamp(1, 120),
-                                longBreakMinutes: l.clamp(1, 240),
-                              );
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content: Text('تنظیمات تایمر ذخیره شد.')),
-                                );
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
+    final provider = context.watch<AppStateProvider>();
+    final music = context.watch<MusicPlayerService>();
 
-              // ۲. تنظیمات فایل متنی خودکار (.txt) و پیش‌نمایش زنده
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ۱. زمان‌بندی پومودورو
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('زمان‌بندی پومودورو Freedium',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  const SizedBox(height: 10),
+                  Row(
                     children: [
-                      const Text(
-                        'فایل گزارش متنی خودکار (ChronoFlow_WorkLog.txt)',
-                        style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'مسیر فعلی ذخیره خودکار: ${provider.txtLogPath}',
-                        style: GoogleFonts.jetBrainsMono(
-                            fontSize: 12, color: AppColors.focus),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          OutlinedButton.icon(
-                            icon: const Icon(Icons.folder_open_rounded),
-                            label: const Text('تغییر مسیر فایل .txt'),
-                            onPressed: () async {
-                              final String? selectedPath =
-                                  await FilePicker.platform.saveFile(
-                                dialogTitle: 'انتخاب مسیر فایل لاگ متنی خودکار',
-                                fileName: AppDefaults.defaultTxtFileName,
-                              );
-                              if (selectedPath != null &&
-                                  selectedPath.isNotEmpty) {
-                                await provider.updateTxtLogPath(selectedPath);
-                                await _loadTxtPreview();
-                              }
-                            },
-                          ),
-                          const SizedBox(width: 10),
-                          OutlinedButton.icon(
-                            icon: const Icon(Icons.refresh_rounded),
-                            label:
-                                const Text('به‌روزرسانی پیش‌نمایش فایل متنی'),
-                            onPressed: () async {
-                              await TxtLoggerService.instance.syncTxtFile();
-                              await _loadTxtPreview();
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Container(
-                        height: 180,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppColors.background,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: AppColors.border),
-                        ),
-                        child: SingleChildScrollView(
-                          child: SelectableText(
-                            _txtPreviewContent,
-                            style: GoogleFonts.jetBrainsMono(
-                              fontSize: 11.5,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
+                      Expanded(
+                        child: TextField(
+                          controller: _focusCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                              labelText: 'تمرکز (دقیقه)',
+                              border: OutlineInputBorder(),
+                              isDense: true),
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // ۳. تنظیمات همگام‌سازی با تقویم گوگل
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'همگام‌سازی خودکار با تقویم گوگل (Google Calendar API)',
-                        style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _shortCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                              labelText: 'استراحت ۵ دقیقه‌ای',
+                              border: OutlineInputBorder(),
+                              isDense: true),
+                        ),
                       ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: TextField(
-                              controller: _gcalTokenCtrl,
-                              decoration: const InputDecoration(
-                                labelText: 'OAuth 2.0 Access Token تقویم گوگل',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: DropdownButtonFormField<String>(
-                              initialValue: _syncLevel,
-                              decoration: const InputDecoration(
-                                labelText: 'سطح همگام‌سازی',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                              dropdownColor: AppColors.surfaceElevated,
-                              items: const [
-                                DropdownMenuItem(
-                                    value: 'task',
-                                    child: Text('سطح تسک (Task-Level)')),
-                                DropdownMenuItem(
-                                    value: 'pomodoro',
-                                    child: Text('سطح پومودورو')),
-                                DropdownMenuItem(
-                                    value: 'both', child: Text('هر دو (Both)')),
-                                DropdownMenuItem(
-                                    value: 'disabled', child: Text('غیرفعال')),
-                              ],
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setState(() => _syncLevel = val);
-                                }
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.cloud_sync_rounded),
-                            label: const Text('ذخیره تنظیمات تقویم'),
-                            onPressed: () async {
-                              await provider.updateGCalSettings(
-                                token: _gcalTokenCtrl.text,
-                                syncLevel: _syncLevel,
-                              );
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content:
-                                          Text('تنظیمات تقویم گوگل ذخیره شد.')),
-                                );
-                              }
-                            },
-                          ),
-                        ],
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _longCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                              labelText: 'استراحت ۶۰ دقیقه‌ای زندگی',
+                              border: OutlineInputBorder(),
+                              isDense: true),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () async {
+                          await provider.updateTimerSettings(
+                            focusMinutes: int.tryParse(_focusCtrl.text) ?? 25,
+                            shortBreakMinutes:
+                                int.tryParse(_shortCtrl.text) ?? 5,
+                            longBreakMinutes:
+                                int.tryParse(_longCtrl.text) ?? 60,
+                          );
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('تنظیمات زمان ذخیره شد.')),
+                            );
+                          }
+                        },
+                        child: const Text('ذخیره زمان'),
                       ),
                     ],
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
-        );
-      },
+          const SizedBox(height: 12),
+
+          // ۲. پلیر موسیقی تمرکز ADHD
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('موسیقی تمرکز ویژه ADHD',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  const SizedBox(height: 8),
+                  Text('تعداد ترک‌های بارگذاری‌شده: ${music.tracks.length}',
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.textSecondary)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      FilledButton.icon(
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: const Text('انتخاب پوشه موسیقی از هارد'),
+                        onPressed: () async {
+                          final selectedFolder =
+                              await FilePicker.platform.getDirectoryPath();
+                          if (selectedFolder != null) {
+                            final count = await music
+                                .loadTracksFromFolder(selectedFolder);
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                      content: Text(
+                                          '$count فایل صوتی بارگذاری شد.')));
+                            }
+                          }
+                        },
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: SwitchListTile(
+                          dense: true,
+                          title: const Text(
+                              'پخش موسیقی در زمان استراحت (پیش‌فرض: خاموش)',
+                              style: TextStyle(fontSize: 12)),
+                          value: music.playDuringBreaks,
+                          onChanged: music.setPlayDuringBreaks,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ۳. تنظیمات تقویم گوگل
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('اتصال به Google Calendar API v3',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _gcalTokenCtrl,
+                          decoration: const InputDecoration(
+                              labelText: 'OAuth 2.0 Access Token گوگل',
+                              border: OutlineInputBorder(),
+                              isDense: true),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () async {
+                          await provider.updateGCalToken(_gcalTokenCtrl.text);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('توکن گوگل ذخیره شد.')),
+                            );
+                          }
+                        },
+                        child: const Text('ذخیره توکن'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ۴. فایل لاگ متنی
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('فایل متنی خودکار ChronoFlow_WorkLog.txt',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  const SizedBox(height: 4),
+                  Text('مسیر: ${provider.txtLogPath}',
+                      style: GoogleFonts.jetBrainsMono(
+                          fontSize: 11, color: AppColors.focus)),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 120,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                        color: AppColors.background,
+                        borderRadius: BorderRadius.circular(6)),
+                    child: SingleChildScrollView(
+                      child: Text(_txtPreview,
+                          style: GoogleFonts.jetBrainsMono(
+                              fontSize: 10.5, color: AppColors.textSecondary)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

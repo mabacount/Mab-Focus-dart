@@ -15,7 +15,6 @@ import '../services/gcal_sync_service.dart';
 import '../services/sound_service.dart';
 import '../services/txt_logger_service.dart';
 import '../services/music_player_service.dart';
-import '../services/time_thief_analyzer.dart';
 
 class AppStateProvider extends ChangeNotifier {
   final Uuid _uuid = const Uuid();
@@ -64,7 +63,7 @@ class AppStateProvider extends ChangeNotifier {
   List<TaskLogEntry> get untitledDraftLogs => _taskLogs
       .where((log) => log.isUntitledDraft && log.id != _activeTaskLog?.id)
       .toList();
-  String _gcalSyncLevel = 'task';
+  final String _gcalSyncLevel = 'task';
   String get gcalSyncLevel => _gcalSyncLevel;
 
   int get focusDurationMinutes => _focusDurationMinutes;

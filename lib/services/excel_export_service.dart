@@ -32,7 +32,7 @@ class ExcelExportService {
     };
     final Map<String, PhaseTag> tagMap = {for (final t in tags) t.id: t};
 
-    // سرستون‌های ۱۵‌گانه ممیزی و ظرفیت
+    // سرستون‌های ۱۵‌گانه استاندارد ممیزی و ظرفیت
     sheet.appendRow([
       TextCellValue('ردیف'),
       TextCellValue('تاریخ'),
@@ -115,7 +115,9 @@ class ExcelExportService {
     }
 
     final fileBytes = excel.save();
-    if (fileBytes == null) return null;
+    if (fileBytes == null) {
+      return null;
+    }
 
     final timestamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
     final defaultFileName = 'MabFocus_Timesheet_$timestamp.xlsx';
@@ -126,7 +128,9 @@ class ExcelExportService {
         fileName: defaultFileName,
       );
 
-      if (outputPath == null) return null;
+      if (outputPath == null) {
+        return null;
+      }
       final finalPath = outputPath.toLowerCase().endsWith('.xlsx')
           ? outputPath
           : '$outputPath.xlsx';
@@ -145,6 +149,7 @@ class ExcelExportService {
           text: 'گزارش تایم‌شیت و سند ظرفیت Mab-Focus',
         ),
       );
+      return mobilePath;
     }
   }
 }
