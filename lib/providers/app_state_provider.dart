@@ -1,4 +1,3 @@
-// موتور دو ساعته، Timestamp-Delta Ticker و مدیریت وضعیت برنامه
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -8,11 +7,15 @@ import '../models/phase_tag.dart';
 import '../models/pomodoro_state.dart';
 import '../models/project_node.dart';
 import '../models/task_log_entry.dart';
+import '../models/scheduled_block.dart';
+import '../models/music_track.dart';
 import '../services/database_service.dart';
 import '../services/excel_export_service.dart';
 import '../services/gcal_sync_service.dart';
 import '../services/sound_service.dart';
 import '../services/txt_logger_service.dart';
+import '../services/music_player_service.dart';
+import '../services/time_thief_analyzer.dart';
 
 class AppStateProvider extends ChangeNotifier {
   final Uuid _uuid = const Uuid();
@@ -21,7 +24,6 @@ class AppStateProvider extends ChangeNotifier {
   TaskLogEntry? _activeTaskLog;
   int _activeTaskElapsedSeconds = 0;
 
-  // متغیرهای مرجع زمانی برای محاسبه دقیق Timestamp-Delta
   DateTime? _phaseStartedAt;
   int _accumulatedPhaseSeconds = 0;
   DateTime? _taskSliceStartedAt;
@@ -31,13 +33,14 @@ class AppStateProvider extends ChangeNotifier {
   List<ProjectNode> _projects = [];
   List<PhaseTag> _phaseTags = [];
   List<TaskLogEntry> _taskLogs = [];
+  List<ScheduledBlock> _scheduledBlocks = [];
+  List<MusicPlaylist> _playlists = [];
 
   int _focusDurationMinutes = 25;
   int _shortBreakDurationMinutes = 5;
   int _longBreakDurationMinutes = 60;
   String _txtLogPath = '';
   String _gcalToken = '';
-  String _gcalSyncLevel = 'task';
   bool _isQuickMenuExpanded = false;
   String? _lastErgonomicNudgeMessage;
 
@@ -48,26 +51,34 @@ class AppStateProvider extends ChangeNotifier {
   int get activeTaskElapsedSeconds => _activeTaskElapsedSeconds;
   List<ProjectNode> get projects => _projects;
   List<ProjectNode> get macroProjects =>
-      _projects.where((p) => p.isMacro && !p.archived).toList();
+      _projects.where((p) => p.isMacro && !p.isArchived).toList();
   List<PhaseTag> get phaseTags => _phaseTags.where((t) => !t.archived).toList();
   List<TaskLogEntry> get taskLogs => _taskLogs;
+  List<ScheduledBlock> get scheduledBlocks => _scheduledBlocks;
+  List<MusicPlaylist> get playlists => _playlists;
+
+  List<TaskLogEntry> get openWorkTasks => _taskLogs
+      .where((l) => !l.isCompleted && l.isWork && !l.isUntitledDraft)
+      .toList();
+
   List<TaskLogEntry> get untitledDraftLogs => _taskLogs
       .where((log) => log.isUntitledDraft && log.id != _activeTaskLog?.id)
       .toList();
+  String _gcalSyncLevel = 'task';
+  String get gcalSyncLevel => _gcalSyncLevel;
 
   int get focusDurationMinutes => _focusDurationMinutes;
   int get shortBreakDurationMinutes => _shortBreakDurationMinutes;
   int get longBreakDurationMinutes => _longBreakDurationMinutes;
   String get txtLogPath => _txtLogPath;
   String get gcalToken => _gcalToken;
-  String get gcalSyncLevel => _gcalSyncLevel;
   bool get isQuickMenuExpanded => _isQuickMenuExpanded;
   String? get lastErgonomicNudgeMessage => _lastErgonomicNudgeMessage;
 
   List<ProjectNode> getSubProjects(String? macroProjectId) {
     if (macroProjectId == null) return [];
     return _projects
-        .where((p) => p.parentId == macroProjectId && !p.archived)
+        .where((p) => p.parentId == macroProjectId && !p.isArchived)
         .toList();
   }
 
@@ -103,18 +114,19 @@ class AppStateProvider extends ChangeNotifier {
         defaultValue: '5');
     final longStr = await db.getSetting(AppDefaults.settingKeyLongBreakDuration,
         defaultValue: '60');
+    final musicBreakStr = await db.getSetting(
+        AppDefaults.settingKeyPlayMusicDuringBreaks,
+        defaultValue: '0');
 
     _focusDurationMinutes = int.tryParse(focusStr ?? '25') ?? 25;
     _shortBreakDurationMinutes = int.tryParse(shortStr ?? '5') ?? 5;
     _longBreakDurationMinutes = int.tryParse(longStr ?? '60') ?? 60;
+    MusicPlayerService.instance.setPlayDuringBreaks(musicBreakStr == '1');
 
     _txtLogPath = await TxtLoggerService.instance.getEffectiveLogFilePath();
     _gcalToken = await db.getSetting(AppDefaults.settingKeyGCalToken,
             defaultValue: '') ??
         '';
-    _gcalSyncLevel = await db.getSetting(AppDefaults.settingKeyGCalSyncLevel,
-            defaultValue: 'task') ??
-        'task';
 
     if (_pomodoroState.status == TimerStatus.idle) {
       _pomodoroState = _pomodoroState.copyWith(
@@ -128,10 +140,17 @@ class AppStateProvider extends ChangeNotifier {
     _projects = await db.getProjects(includeArchived: true);
     _phaseTags = await db.getPhaseTags(includeArchived: true);
     _taskLogs = await db.getAllTaskLogs();
+    _playlists = await db.getAllMusicPlaylists();
+
+    final now = DateTime.now();
+    final startRange = now.subtract(const Duration(days: 14));
+    final endRange = now.add(const Duration(days: 14));
+    _scheduledBlocks = await db.getScheduledBlocksInRange(startRange, endRange);
+
     notifyListeners();
   }
 
-  // ==================== موتور دو ساعته (Dual-Clock Engine) ====================
+  // ==================== موتور زمان‌سنج بر پایه Timestamp-Delta ====================
 
   void _ensureTickerRunning() {
     _ticker?.cancel();
@@ -156,6 +175,16 @@ class AppStateProvider extends ChangeNotifier {
       _activeTaskElapsedSeconds = _accumulatedTaskSeconds + currentTaskDelta;
     }
 
+    // حالت ۱: کرنومتر آزاد (Stopwatch)
+    if (_pomodoroState.isStopwatch) {
+      _pomodoroState = _pomodoroState.copyWith(
+        elapsedSeconds: totalPhaseElapsed,
+      );
+      notifyListeners();
+      return;
+    }
+
+    // حالت ۲: پومودورو یا استراحت
     TimerStatus newStatus = _pomodoroState.status;
     int overtimeSec = 0;
     int lastNudge = _pomodoroState.lastNudgeAtOvertimeSeconds;
@@ -191,12 +220,14 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// ۱. شروع فوری کار با اصطکاک صفر (ساخت تسک بدون عنوان در صورت عدم ورود اطلاعات)
+  // ==================== کنترل پومودورو، تسک‌ها و کرنومتر ====================
+
   Future<void> startInstantWork({
     String? title,
     String? macroProjectId,
     String? subProjectId,
     List<String>? tagIds,
+    String? existingGroupId,
   }) async {
     final now = DateTime.now();
 
@@ -212,6 +243,7 @@ class AppStateProvider extends ChangeNotifier {
         overtimeSeconds: 0,
         lastNudgeAtOvertimeSeconds: 0,
       );
+      MusicPlayerService.instance.onPomodoroModeChanged(PomodoroMode.focus);
     } else if (_pomodoroState.status == TimerStatus.paused) {
       _phaseStartedAt = now;
       _pomodoroState = _pomodoroState.copyWith(
@@ -229,6 +261,8 @@ class AppStateProvider extends ChangeNotifier {
 
       final newEntry = TaskLogEntry(
         id: _uuid.v4(),
+        groupId: existingGroupId ?? _uuid.v4(),
+        entryType: 'work',
         title: cleanTitle,
         isUntitledDraft: isUntitled,
         macroProjectId: macroProjectId,
@@ -254,7 +288,71 @@ class AppStateProvider extends ChangeNotifier {
     await refreshAllData();
   }
 
-  /// ۲. به‌روزرسانی مشخصات تسکِ در حال اجرا بدون درج تگ [Edited]
+  /// سوییچ به کرنومتر آزاد (Stopwatch Mode) برای خواب و فعالیت‌های بدون سقف
+  Future<void> startStopwatchMode({
+    String title = 'خواب و استراحت عمیق',
+    String? macroProjectId,
+    String? subProjectId,
+  }) async {
+    await _closeAndPersistActiveTask();
+    final now = DateTime.now();
+
+    _accumulatedPhaseSeconds = 0;
+    _phaseStartedAt = now;
+    _lastErgonomicNudgeMessage = null;
+
+    final entry = TaskLogEntry(
+      id: _uuid.v4(),
+      groupId: _uuid.v4(),
+      entryType: 'stopwatch',
+      title: title,
+      isUntitledDraft: false,
+      macroProjectId: macroProjectId,
+      subProjectId: subProjectId,
+      startTime: now,
+    );
+
+    await DatabaseService.instance.insertTaskLog(entry);
+    _activeTaskLog = entry;
+    _accumulatedTaskSeconds = 0;
+    _activeTaskElapsedSeconds = 0;
+    _taskSliceStartedAt = now;
+
+    _pomodoroState = _pomodoroState.copyWith(
+      mode: PomodoroMode.stopwatch,
+      status: TimerStatus.running,
+      elapsedSeconds: 0,
+      targetSeconds: 0,
+      activeTaskId: entry.id,
+    );
+
+    _ensureTickerRunning();
+    await refreshAllData();
+  }
+
+  /// ادامه یک تسک باز قبلی (Multi-Slice Resume)
+  Future<void> resumeOpenTask(TaskLogEntry target) async {
+    await startInstantWork(
+      title: target.title,
+      macroProjectId: target.macroProjectId,
+      subProjectId: target.subProjectId,
+      tagIds: target.tagIds,
+      existingGroupId: target.groupId,
+    );
+  }
+
+  /// علامت‌گذاری یک کار به عنوان پایان‌یافته
+  Future<void> markTaskAsCompleted(String id) async {
+    final task = await DatabaseService.instance.getTaskLogById(id);
+    if (task == null) return;
+    final updated = task.copyWith(isCompleted: true);
+    await DatabaseService.instance.updateTaskLog(updated);
+    if (_activeTaskLog?.id == id) {
+      _activeTaskLog = updated;
+    }
+    await refreshAllData();
+  }
+
   Future<void> updateActiveTaskMetadata({
     required String title,
     String? macroProjectId,
@@ -281,12 +379,12 @@ class AppStateProvider extends ChangeNotifier {
     await TxtLoggerService.instance.syncTxtFile();
   }
 
-  /// ۳. تعویض تسک در میانه پومودورو بدون ریست شدن ساعت پومودورو
   Future<void> switchTaskMidPomodoro({
     required String newTitle,
     String? macroProjectId,
     String? subProjectId,
     required List<String> tagIds,
+    String? existingGroupId,
   }) async {
     await _closeAndPersistActiveTask();
 
@@ -298,6 +396,8 @@ class AppStateProvider extends ChangeNotifier {
 
     final nextTask = TaskLogEntry(
       id: _uuid.v4(),
+      groupId: existingGroupId ?? _uuid.v4(),
+      entryType: 'work',
       title: cleanTitle,
       isUntitledDraft: isUntitled,
       macroProjectId: macroProjectId,
@@ -315,46 +415,50 @@ class AppStateProvider extends ChangeNotifier {
     _taskSliceStartedAt = now;
     _pomodoroState = _pomodoroState.copyWith(activeTaskId: nextTask.id);
 
-    if (_pomodoroState.status == TimerStatus.idle ||
-        _pomodoroState.status == TimerStatus.paused) {
-      _phaseStartedAt = now;
-      _pomodoroState = _pomodoroState.copyWith(status: TimerStatus.running);
-      _ensureTickerRunning();
-    }
-
     await refreshAllData();
     await TxtLoggerService.instance.syncTxtFile();
   }
 
-  /// ۴. شروع استراحت با بررسی قانون استراحت در پروژه کلان
+  /// شروع استراحت با ثبت رکورد استراحت در دیتابیس و بررسی قوانین استراحت پروژه
   Future<void> startBreak() async {
     final now = DateTime.now();
-    final int nextCompletedSets = _pomodoroState.mode == PomodoroMode.focus
+    final int nextSets = _pomodoroState.mode == PomodoroMode.focus
         ? _pomodoroState.completedSetsInCycle + 1
         : _pomodoroState.completedSetsInCycle;
 
     final bool isLongBreak =
-        (nextCompletedSets % AppDurations.setsPerCycle) == 0 &&
-            nextCompletedSets > 0;
+        (nextSets % AppDurations.setsPerCycle) == 0 && nextSets > 0;
     final PomodoroMode nextMode =
         isLongBreak ? PomodoroMode.longBreak : PomodoroMode.shortBreak;
-    final int breakTargetSeconds = isLongBreak
+    final int breakSec = isLongBreak
         ? _longBreakDurationMinutes * 60
         : _shortBreakDurationMinutes * 60;
 
-    bool keepTaskOpenDuringBreak = false;
+    bool keepTaskOpen = false;
     if (_activeTaskLog != null && _activeTaskLog!.macroProjectId != null) {
-      final macroProject = getProjectById(_activeTaskLog!.macroProjectId);
-      if (macroProject != null) {
-        keepTaskOpenDuringBreak = isLongBreak
-            ? macroProject.countLongBreaksAsWork
-            : macroProject.countShortBreaksAsWork;
+      final macro = getProjectById(_activeTaskLog!.macroProjectId);
+      if (macro != null) {
+        keepTaskOpen = isLongBreak
+            ? macro.countLongBreaksAsWork
+            : macro.countShortBreaksAsWork;
       }
     }
 
-    if (!keepTaskOpenDuringBreak) {
+    if (!keepTaskOpen) {
       await _closeAndPersistActiveTask();
     }
+
+    // ثبت رکورد واقعی استراحت در جدول task_logs
+    final breakEntry = TaskLogEntry(
+      id: _uuid.v4(),
+      groupId: _uuid.v4(),
+      entryType: isLongBreak ? 'long_break' : 'short_break',
+      title: isLongBreak ? 'استراحت طولانی (زندگی)' : 'استراحت ۵ دقیقه‌ای',
+      isUntitledDraft: false,
+      macroProjectId: _activeTaskLog?.macroProjectId,
+      startTime: now,
+    );
+    await DatabaseService.instance.insertTaskLog(breakEntry);
 
     _accumulatedPhaseSeconds = 0;
     _phaseStartedAt = now;
@@ -364,13 +468,13 @@ class AppStateProvider extends ChangeNotifier {
       mode: nextMode,
       status: TimerStatus.running,
       elapsedSeconds: 0,
-      targetSeconds: breakTargetSeconds,
-      completedSetsInCycle: nextCompletedSets,
+      targetSeconds: breakSec,
+      completedSetsInCycle: nextSets,
       overtimeSeconds: 0,
       lastNudgeAtOvertimeSeconds: 0,
-      activeTaskId: _activeTaskLog?.id,
     );
 
+    MusicPlayerService.instance.onPomodoroModeChanged(nextMode);
     _ensureTickerRunning();
     await refreshAllData();
   }
@@ -405,9 +509,11 @@ class AppStateProvider extends ChangeNotifier {
     }
 
     final nextStatus =
-        _pomodoroState.elapsedSeconds >= _pomodoroState.targetSeconds
+        _pomodoroState.elapsedSeconds >= _pomodoroState.targetSeconds &&
+                !_pomodoroState.isStopwatch
             ? TimerStatus.overtime
             : TimerStatus.running;
+
     _pomodoroState = _pomodoroState.copyWith(status: nextStatus);
     _ensureTickerRunning();
     notifyListeners();
@@ -429,6 +535,7 @@ class AppStateProvider extends ChangeNotifier {
       windowPosture: _pomodoroState.windowPosture,
     );
 
+    MusicPlayerService.instance.onPomodoroModeChanged(PomodoroMode.focus);
     await refreshAllData();
   }
 
@@ -436,34 +543,30 @@ class AppStateProvider extends ChangeNotifier {
     if (_activeTaskLog == null) return;
 
     final now = DateTime.now();
-    int finalTaskSeconds = _accumulatedTaskSeconds;
+    int finalSeconds = _accumulatedTaskSeconds;
     if (_taskSliceStartedAt != null) {
-      finalTaskSeconds += now.difference(_taskSliceStartedAt!).inSeconds;
+      finalSeconds += now.difference(_taskSliceStartedAt!).inSeconds;
     }
-    if (finalTaskSeconds <= 0) {
-      finalTaskSeconds = now.difference(_activeTaskLog!.startTime).inSeconds;
-    }
-    if (finalTaskSeconds < 1) {
-      finalTaskSeconds = 1;
-    }
+    if (finalSeconds < 1) finalSeconds = 1;
 
-    final closedEntry = _activeTaskLog!.copyWith(
+    final closed = _activeTaskLog!.copyWith(
       endTime: now,
-      durationSeconds: finalTaskSeconds,
+      durationSeconds: finalSeconds,
       overtimeSeconds: _pomodoroState.overtimeSeconds,
     );
 
-    await DatabaseService.instance.updateTaskLog(closedEntry);
+    await DatabaseService.instance.updateTaskLog(closed);
     _activeTaskLog = null;
     _taskSliceStartedAt = null;
     _accumulatedTaskSeconds = 0;
     _activeTaskElapsedSeconds = 0;
 
     await TxtLoggerService.instance.syncTxtFile();
-    unawaited(GCalSyncService.instance.syncTaskLogEntry(closedEntry));
+    final proj = getProjectById(closed.effectiveProjectId);
+    unawaited(GCalSyncService.instance.syncTaskLogEntry(closed, project: proj));
   }
 
-  // ==================== تغییر کالبد پنجره ویندوز (Window Morphing) ====================
+  // ==================== مدیریت پنجره ویندوز ====================
 
   Future<void> setWindowPosture(WindowPosture posture,
       {bool expanded = false}) async {
@@ -474,7 +577,8 @@ class AppStateProvider extends ChangeNotifier {
     if (posture == WindowPosture.dashboard) {
       await PlatformHelper.switchToDashboardMode();
     } else if (posture == WindowPosture.floatingCircle) {
-      await PlatformHelper.switchToFloatingWidgetMode(expanded: expanded);
+      await PlatformHelper.switchToFloatingWidgetMode(
+          isSheetExpanded: expanded);
     } else if (posture == WindowPosture.edgeDockedLeft) {
       await PlatformHelper.switchToEdgeDockedMode(true);
     } else if (posture == WindowPosture.edgeDockedRight) {
@@ -486,13 +590,13 @@ class AppStateProvider extends ChangeNotifier {
     _isQuickMenuExpanded = expanded;
     notifyListeners();
     if (_pomodoroState.windowPosture == WindowPosture.floatingCircle) {
-      await PlatformHelper.switchToFloatingWidgetMode(expanded: expanded);
+      await PlatformHelper.switchToFloatingWidgetMode(
+          isSheetExpanded: expanded);
     }
   }
 
-  // ==================== عملیات ممیزی، کارتابل و CRUD داشبورد ====================
+  // ==================== متدهای CRUD و تحلیل ====================
 
-  /// تکمیل مشخصات تسک بدون عنوان در کارتابل بدون خوردن تگ [Edited]
   Future<void> completeUntitledDraft({
     required String id,
     required String title,
@@ -517,10 +621,11 @@ class AppStateProvider extends ChangeNotifier {
 
     await refreshAllData();
     await TxtLoggerService.instance.syncTxtFile();
-    unawaited(GCalSyncService.instance.syncTaskLogEntry(updated));
+    final proj = getProjectById(updated.effectiveProjectId);
+    unawaited(
+        GCalSyncService.instance.syncTaskLogEntry(updated, project: proj));
   }
 
-  /// ویرایش کامل رکورد در جدول فعالیت‌ها همراه با اعمال قانون ممیزی [Edited]
   Future<void> editTaskLogWithAudit({
     required String id,
     required String newTitle,
@@ -530,6 +635,7 @@ class AppStateProvider extends ChangeNotifier {
     required DateTime newStartTime,
     required DateTime newEndTime,
     required int newDurationSeconds,
+    bool? isCompleted,
     String? editNote,
   }) async {
     final updated = await DatabaseService.instance.updateTaskLogWithAudit(
@@ -541,12 +647,15 @@ class AppStateProvider extends ChangeNotifier {
       newStartTime: newStartTime,
       newEndTime: newEndTime,
       newDurationSeconds: newDurationSeconds,
+      isCompleted: isCompleted,
       editNote: editNote,
     );
 
     await refreshAllData();
     await TxtLoggerService.instance.syncTxtFile();
-    unawaited(GCalSyncService.instance.syncTaskLogEntry(updated));
+    final proj = getProjectById(updated.effectiveProjectId);
+    unawaited(
+        GCalSyncService.instance.syncTaskLogEntry(updated, project: proj));
   }
 
   Future<void> deleteTaskLog(String id) async {
@@ -555,22 +664,7 @@ class AppStateProvider extends ChangeNotifier {
     await TxtLoggerService.instance.syncTxtFile();
   }
 
-  Future<void> saveProject({
-    String? id,
-    required String name,
-    String? parentId,
-    bool countShortBreaksAsWork = false,
-    bool countLongBreaksAsWork = false,
-    String colorHex = '#3B82F6',
-  }) async {
-    final project = ProjectNode(
-      id: id ?? _uuid.v4(),
-      name: name.trim(),
-      parentId: parentId,
-      countShortBreaksAsWork: countShortBreaksAsWork,
-      countLongBreaksAsWork: countLongBreaksAsWork,
-      colorHex: colorHex,
-    );
+  Future<void> saveProject(ProjectNode project) async {
     await DatabaseService.instance.insertProject(project);
     await refreshAllData();
   }
@@ -580,22 +674,36 @@ class AppStateProvider extends ChangeNotifier {
     await refreshAllData();
   }
 
-  Future<void> savePhaseTag({
-    String? id,
-    required String name,
-    String category = 'phase',
-  }) async {
-    final tag = PhaseTag(
-      id: id ?? _uuid.v4(),
-      name: name.trim(),
-      category: category,
-    );
+  Future<void> savePhaseTag(PhaseTag tag) async {
     await DatabaseService.instance.insertPhaseTag(tag);
     await refreshAllData();
   }
 
   Future<void> deletePhaseTag(String id) async {
     await DatabaseService.instance.deletePhaseTag(id);
+    await refreshAllData();
+  }
+
+  Future<void> saveScheduledBlock(ScheduledBlock block) async {
+    await DatabaseService.instance.insertScheduledBlock(block);
+    unawaited(GCalSyncService.instance.pushScheduledBlockToGCal(block));
+    await refreshAllData();
+  }
+
+  Future<void> deleteScheduledBlock(String id) async {
+    await DatabaseService.instance.deleteScheduledBlock(id);
+    await refreshAllData();
+  }
+
+  Future<void> syncGoogleCalendar() async {
+    final now = DateTime.now();
+    final minDate = now.subtract(const Duration(days: 7));
+    final maxDate = now.add(const Duration(days: 14));
+    await GCalSyncService.instance.fetchScheduledBlocksFromGCal(
+      timeMin: minDate,
+      timeMax: maxDate,
+      projects: _projects,
+    );
     await refreshAllData();
   }
 
@@ -616,7 +724,8 @@ class AppStateProvider extends ChangeNotifier {
     await db.setSetting(
         AppDefaults.settingKeyLongBreakDuration, longBreakMinutes.toString());
 
-    if (_pomodoroState.status == TimerStatus.idle) {
+    if (_pomodoroState.status == TimerStatus.idle &&
+        !_pomodoroState.isStopwatch) {
       _pomodoroState =
           _pomodoroState.copyWith(targetSeconds: focusMinutes * 60);
     }
@@ -632,15 +741,10 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateGCalSettings({
-    required String token,
-    required String syncLevel,
-  }) async {
+  Future<void> updateGCalToken(String token) async {
     _gcalToken = token.trim();
-    _gcalSyncLevel = syncLevel;
-    final db = DatabaseService.instance;
-    await db.setSetting(AppDefaults.settingKeyGCalToken, _gcalToken);
-    await db.setSetting(AppDefaults.settingKeyGCalSyncLevel, _gcalSyncLevel);
+    await DatabaseService.instance
+        .setSetting(AppDefaults.settingKeyGCalToken, _gcalToken);
     notifyListeners();
   }
 

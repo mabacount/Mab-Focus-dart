@@ -1,8 +1,7 @@
-// مدل تگ‌های فاز کاری و وضعیت اجرایی
 class PhaseTag {
   final String id;
   final String name;
-  final String category; // 'phase' یا 'status'
+  final String category; // 'phase' | 'status'
   final bool archived;
 
   const PhaseTag({

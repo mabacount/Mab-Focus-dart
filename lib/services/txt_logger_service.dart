@@ -1,4 +1,3 @@
-// لاگر خودکار فایل متنی ChronoFlow_WorkLog.txt
 import 'dart:io';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
@@ -28,9 +27,13 @@ class TxtLoggerService {
   }
 
   String _formatDuration(int totalSeconds) {
-    final int minutes = totalSeconds ~/ 60;
-    final int seconds = totalSeconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}m${seconds.toString().padLeft(2, '0')}s';
+    final int h = totalSeconds ~/ 3600;
+    final int m = (totalSeconds % 3600) ~/ 60;
+    final int s = totalSeconds % 60;
+    if (h > 0) {
+      return '${h}h ${m}m ${s}s';
+    }
+    return '${m}m ${s}s';
   }
 
   Future<void> syncTxtFile() async {
@@ -43,11 +46,9 @@ class TxtLoggerService {
           await DatabaseService.instance.getPhaseTags(includeArchived: true);
 
       final Map<String, ProjectNode> projectMap = {
-        for (final proj in projects) proj.id: proj,
+        for (final p in projects) p.id: p
       };
-      final Map<String, PhaseTag> tagMap = {
-        for (final tag in tags) tag.id: tag,
-      };
+      final Map<String, PhaseTag> tagMap = {for (final t in tags) t.id: t};
 
       final dateFormat = DateFormat('yyyy-MM-dd');
       final timeFormat = DateFormat('HH:mm:ss');
@@ -56,11 +57,11 @@ class TxtLoggerService {
       buffer.writeln(
           '================================================================================');
       buffer
-          .writeln('MAB-FOCUS (CHRONOFLOW) — WORK LOG & EMPLOYER AUDIT TRAIL');
+          .writeln('MAB-FOCUS v3.0 — WORK LOG, BREAKS & CAPACITY AUDIT TRAIL');
       buffer.writeln(
           'Last Updated: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now())}');
       buffer.writeln(
-          '================================================================================');
+          '================================================================================\n');
 
       for (final log in logs) {
         final dateStr = dateFormat.format(log.startTime.toLocal());
@@ -68,37 +69,39 @@ class TxtLoggerService {
         final endStr = log.endTime != null
             ? timeFormat.format(log.endTime!.toLocal())
             : 'در حال اجرا';
-        final durationStr = _formatDuration(log.durationSeconds);
+        final durStr = _formatDuration(log.durationSeconds);
 
         final macroName = log.macroProjectId != null
-            ? (projectMap[log.macroProjectId!]?.name ?? 'بدون پروژه کلان')
-            : 'بدون پروژه کلان';
+            ? (projectMap[log.macroProjectId]?.name ?? '-')
+            : '-';
         final subName = log.subProjectId != null
-            ? (projectMap[log.subProjectId!]?.name ?? '-')
+            ? (projectMap[log.subProjectId]?.name ?? '-')
             : '-';
         final tagNames = log.tagIds
             .map((id) => tagMap[id]?.name)
             .whereType<String>()
             .join('، ');
-        final tagSection = tagNames.isEmpty ? 'بدون تگ' : tagNames;
 
-        if (log.isUntitledDraft) {
+        if (log.isBreakEntry) {
+          final breakTitle = log.entryType == 'long_break'
+              ? 'استراحت طولانی (زندگی)'
+              : 'استراحت ۵ دقیقه‌ای';
           buffer.writeln(
-            '[$dateStr | $startStr -$endStr | $durationStr] [نیازمند تکمیل] ${log.title}',
-          );
+              '[$dateStr | $startStr - $endStr | $durStr] [استراحت] $breakTitle');
+        } else if (log.isUntitledDraft) {
+          buffer.writeln(
+              '[$dateStr | $startStr - $endStr | $durStr] [نیازمند تکمیل] ${log.title}');
         } else if (log.isEdited) {
           final origDur = _formatDuration(
               log.originalDurationSeconds ?? log.durationSeconds);
-          final notePart =
-              (log.editNote != null && log.editNote!.trim().isNotEmpty)
-                  ? ' (علت: ${log.editNote!.trim()})'
-                  : '';
+          final note = log.editNote != null ? ' (علت: ${log.editNote})' : '';
           buffer.writeln(
-            '[$dateStr | $startStr -$endStr | $durationStr] [EDITED / ویرایش‌شده - زمان اولیه: $origDur] [$macroName >$subName | $tagSection]${log.title}$notePart',
+            '[$dateStr | $startStr - $endStr | $durStr] [EDITED - زمان اولیه: $origDur] [$macroName > $subName | $tagNames] ${log.title}$note',
           );
         } else {
+          final typeLabel = log.isStopwatch ? '[کرنومتر]' : '[کار]';
           buffer.writeln(
-            '[$dateStr \vert{}$startStr - $endStr \vert{}$durationStr] [$macroName >$subName | $tagSection]${log.title}',
+            '[$dateStr | $startStr - $endStr | $durStr] $typeLabel [$macroName > $subName | $tagNames] ${log.title}',
           );
         }
       }
@@ -108,9 +111,7 @@ class TxtLoggerService {
         await file.parent.create(recursive: true);
       }
       await file.writeAsString(buffer.toString(), flush: true);
-    } catch (_) {
-      // جلوگیری از توقف تایمر در صورت قفل بودن موقت فایل در سیستم‌عامل
-    }
+    } catch (_) {}
   }
 
   Future<String> readLogFileContent() async {
@@ -120,7 +121,7 @@ class TxtLoggerService {
       if (await file.exists()) {
         return await file.readAsString();
       }
-      return 'فایل گزارش متنی هنوز ایجاد نشده است.';
+      return 'فایل لاگ هنوز ایجاد نشده است.';
     } catch (e) {
       return 'خطا در خواندن فایل متنی: $e';
     }
