@@ -1,0 +1,38 @@
+name: mab_focus
+description: Mab-Focus - Dual-Clock Pomodoro & Employer Time Tracker for Windows & Android
+publish_to: 'none'
+version: 2.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  provider: ^6.1.2
+  sqflite: ^2.3.3
+  sqflite_common_ffi: ^2.3.3      # پشتیبانی کامل از SQLite در ویندوز
+  path_provider: ^2.1.3
+  path: ^1.9.0
+  uuid: ^4.4.0
+  intl: 0.20.2
+  shared_preferences: ^2.2.3
+  window_manager: ^0.5.2          # مدیریت پنجره شفاف و بدون حاشیه در ویندوز
+  screen_retriever: ^0.2.2        # محاسبه ابعاد مانیتور جهت چسبیدن به لبه
+  excel: ^4.0.3                   # خروجی اکسل بدون وابستگی بومی
+  file_picker: ^13.3.2             # انتخاب مسیر لاگ متنی و فایل اکسل
+  share_plus: ^13.3.1              # اشتراک‌گذاری خروجی در اندروید
+  http: ^1.2.1                    # ارتباط با API تقویم گوگل
+  google_fonts: ^8.2.1            # فونت‌های Vazirmatn و JetBrains Mono
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/audio/
