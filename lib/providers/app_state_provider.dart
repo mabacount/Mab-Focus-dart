@@ -834,6 +834,36 @@ class AppStateProvider extends ChangeNotifier {
         GCalSyncService.instance.syncTaskLogEntry(updated, project: proj));
   }
 
+  /// به‌روزرسانی سریع زمان شروع و پایان تسک در تقویم
+  Future<void> updateTaskLogTimes({
+    required String id,
+    required DateTime newStartTime,
+    required DateTime newEndTime,
+    String? editNote,
+  }) async {
+    final existing = await DatabaseService.instance.getTaskLogById(id);
+    if (existing == null) return;
+    final int newDurationSec = newEndTime.difference(newStartTime).inSeconds;
+    final tags = existing.tagIds.toList();
+    if (!tags.contains('دستی') && !tags.contains('manual')) {
+      tags.add('دستی');
+    }
+    await editTaskLogWithAudit(
+      id: id,
+      newTitle: existing.title,
+      newMacroProjectId: existing.macroProjectId,
+      newSubProjectId: existing.subProjectId,
+      newTagIds: tags,
+      newStartTime: newStartTime,
+      newEndTime: newEndTime,
+      newDurationSeconds: newDurationSec,
+      isCompleted: existing.isCompleted,
+      editNote: editNote ?? 'جابه‌جایی در تقویم',
+    );
+  }
+
+
+
   Future<void> editTaskLogWithAudit({
     required String id,
     required String newTitle,
@@ -868,6 +898,46 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<void> deleteTaskLog(String id) async {
     await DatabaseService.instance.deleteTaskLog(id);
+    await refreshAllData();
+    await TxtLoggerService.instance.syncTxtFile();
+  }
+
+  /// ایجاد لاگ کارکرد به صورت دستی (با ثبت تگ «دستی» و ممیزی)
+  Future<void> createManualTaskLog({
+    required String title,
+    String? macroProjectId,
+    String? subProjectId,
+    required DateTime startTime,
+    required DateTime endTime,
+    List<String>? tagIds,
+    String entryType = 'work',
+  }) async {
+    final now = DateTime.now();
+    final durationSeconds = endTime.difference(startTime).inSeconds;
+    final tags = (tagIds ?? []).toList();
+    if (!tags.contains('دستی') && !tags.contains('manual')) {
+      tags.add('دستی');
+    }
+
+    final entry = TaskLogEntry(
+      id: const Uuid().v4(),
+      groupId: const Uuid().v4(),
+      entryType: entryType,
+      title: title.trim().isEmpty ? 'گزارش دستی' : title.trim(),
+      isUntitledDraft: false,
+      isCompleted: true,
+      macroProjectId: macroProjectId,
+      subProjectId: subProjectId,
+      tagIds: tags,
+      startTime: startTime,
+      endTime: endTime,
+      durationSeconds: durationSeconds,
+      isEdited: true,
+      editedAt: now,
+      editNote: 'ثبت دستی از تقویم',
+    );
+
+    await DatabaseService.instance.insertTaskLog(entry);
     await refreshAllData();
     await TxtLoggerService.instance.syncTxtFile();
   }

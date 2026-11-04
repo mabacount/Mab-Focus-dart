@@ -78,14 +78,26 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     _hoverDebounceTimer?.cancel();
     if (!_isHovered && mounted) {
       setState(() => _isHovered = true);
+      final provider = context.read<AppStateProvider>();
+      PlatformHelper.setFloatingWidgetHovered(
+        true,
+        buttonsOnRight: _buttonsOnRight,
+        isSheetExpanded: provider.isQuickMenuExpanded,
+      );
     }
   }
 
   void _onMouseExit() {
     _hoverDebounceTimer?.cancel();
-    _hoverDebounceTimer = Timer(const Duration(milliseconds: 250), () {
-      if (mounted && _isHovered) {
+    _hoverDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+      final provider = context.read<AppStateProvider>();
+      if (mounted && _isHovered && !provider.isQuickMenuExpanded) {
         setState(() => _isHovered = false);
+        PlatformHelper.setFloatingWidgetHovered(
+          false,
+          buttonsOnRight: _buttonsOnRight,
+          isSheetExpanded: false,
+        );
       }
     });
   }
@@ -260,7 +272,13 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
           isActive: provider.isQuickMenuExpanded,
           activeColor: AppColors.focus,
           onPressed: () {
-            provider.toggleQuickMenuExpanded(!provider.isQuickMenuExpanded);
+            final next = !provider.isQuickMenuExpanded;
+            provider.toggleQuickMenuExpanded(next);
+            PlatformHelper.setFloatingWidgetHovered(
+              true,
+              buttonsOnRight: _buttonsOnRight,
+              isSheetExpanded: next,
+            );
           },
         );
 
@@ -453,9 +471,13 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
 
                 // ۲. دایره تایمر اصلی (کاملاً ثابت و مهارشده در مختصات مطلق)
                 Positioned(
-                  top: circleTop,
-                  right: _buttonsOnRight ? null : circleEdge,
-                  left: _buttonsOnRight ? circleEdge : null,
+                  top: showFullMenu ? circleTop : 8,
+                  right: showFullMenu
+                      ? (_buttonsOnRight ? null : circleEdge)
+                      : null,
+                  left: showFullMenu
+                      ? (_buttonsOnRight ? circleEdge : null)
+                      : 8,
                   child: timerCircle,
                 ),
 

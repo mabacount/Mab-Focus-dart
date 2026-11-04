@@ -9,6 +9,7 @@ class PlatformHelper {
   static bool get isDesktop =>
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
+  static const double unhoveredSize = 84.0;
   static const double baseCircleSize = 68.0;
   static const double hoveredWidth = 340.0;
   static const double hoveredHeight = 145.0;
@@ -65,7 +66,58 @@ class PlatformHelper {
     return false;
   }
 
-  /// تغییر وضعیت پنجره به حالت شناور ثابت و پایدار بدون فراخوانی در زمان هاور
+  /// تغییر اندازه پنجره ویندوز بر اساس وضعیت هاور جهت آزاد شدن کلیک‌های اطراف دایره
+  static Future<void> setFloatingWidgetHovered(
+    bool isHovered, {
+    bool buttonsOnRight = false,
+    bool isSheetExpanded = false,
+  }) async {
+    if (!isDesktop) return;
+    try {
+      final currentPos = await windowManager.getPosition();
+      final currentSize = await windowManager.getSize();
+
+      // محاسبه مختصات مرکز دایره روی نمایشگر فیزیکی
+      final double cx;
+      final double cy;
+
+      if (currentSize.width <= 110.0) {
+        // اندازه پنجره در حالت بسته: unhoveredSize x unhoveredSize
+        cx = currentPos.dx + (currentSize.width / 2.0);
+        cy = currentPos.dy + (currentSize.height / 2.0);
+      } else {
+        // اندازه پنجره در حالت باز: 340x145
+        final double circleXInWindow = buttonsOnRight ? 78.0 : (340.0 - 78.0);
+        const double circleYInWindow = 44.0;
+        cx = currentPos.dx + circleXInWindow;
+        cy = currentPos.dy + circleYInWindow;
+      }
+
+      if (isSheetExpanded) {
+        await windowManager
+            .setSize(const Size(expandedSheetWidth, expandedSheetHeight));
+        final double targetX =
+            buttonsOnRight ? (cx - 78.0) : (cx - (340.0 - 78.0));
+        final double targetY = cy - 44.0;
+        await windowManager.setPosition(Offset(targetX, targetY));
+      } else if (isHovered) {
+        // باز شدن پنجره به 340x145 به طور دقیق دور مرکز دایره
+        final double targetX =
+            buttonsOnRight ? (cx - 78.0) : (cx - (340.0 - 78.0));
+        final double targetY = cy - 44.0;
+        await windowManager.setSize(const Size(hoveredWidth, hoveredHeight));
+        await windowManager.setPosition(Offset(targetX, targetY));
+      } else {
+        // جمع شدن پنجره به 84x84 دقیقاً روی دایره تا فضای اطراف برای کلیک آزاد شود
+        final double targetX = cx - (unhoveredSize / 2.0);
+        final double targetY = cy - (unhoveredSize / 2.0);
+        await windowManager.setSize(const Size(unhoveredSize, unhoveredSize));
+        await windowManager.setPosition(Offset(targetX, targetY));
+      }
+    } catch (_) {}
+  }
+
+  /// انتقال به حالت ویجت شناور (با اندازه اولیه ۸۴×۸۴ جهت آزاد بودن اطراف دایره)
   static Future<void> switchToFloatingWidgetMode({
     bool isSheetExpanded = false,
     bool isPinned = true,
@@ -87,9 +139,9 @@ class PlatformHelper {
     final double screenHeight = display.size.height;
 
     final double targetWidth =
-        isSheetExpanded ? expandedSheetWidth : hoveredWidth;
+        isSheetExpanded ? expandedSheetWidth : unhoveredSize;
     final double targetHeight =
-        isSheetExpanded ? expandedSheetHeight : hoveredHeight;
+        isSheetExpanded ? expandedSheetHeight : unhoveredSize;
 
     final double maxX = screenLeft + screenWidth - targetWidth;
     final double maxY = screenTop + screenHeight - targetHeight;
