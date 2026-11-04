@@ -42,10 +42,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     Color statusColor = AppColors.focus;
     if (state.isStopwatch) {
-      statusColor = AppColors.stopwatch;
+      statusColor = state.isWork ? AppColors.stopwatch : AppColors.breakTime;
     } else if (state.isOvertime) {
       statusColor = AppColors.overtime;
-    } else if (state.mode != PomodoroMode.focus) {
+    } else if (state.isLife) {
       statusColor = AppColors.breakTime;
     }
 
@@ -88,7 +88,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(width: 12),
               Flexible(
                 child: Text(
-                  'فعال: ${provider.activeTaskLog!.title}',
+                  state.isWork
+                      ? 'فعال: ${provider.activeTaskLog!.title}'
+                      : 'وضعیت: زندگی / استراحت',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                       fontSize: 12.5, color: AppColors.textSecondary),
@@ -133,7 +135,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   IconButton(
                     icon: const Icon(Icons.skip_next_rounded,
-                        size: 18, color: AppColors.textSecondary),
+                    size: 18, color: AppColors.textSecondary),
                     onPressed: music.nextTrack,
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
@@ -158,45 +160,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(width: 10),
           ],
 
-          // کنترل‌های سریع تایمر
+          // سوییچ کار و زندگی (استراحت) - در این سیستم توقف نداریم؛ یا کار است یا زندگی
           IconButton(
-            tooltip:
-                state.status == TimerStatus.running ? 'توقف موقت' : 'شروع کار',
+            tooltip: state.isWork
+                ? 'ورود به وضعیت زندگی (استراحت)'
+                : 'پایان استراحت و شروع کار',
             icon: Icon(
-              state.status == TimerStatus.running
-                  ? Icons.pause_circle_filled_rounded
-                  : Icons.play_circle_fill_rounded,
-              color: statusColor,
-              size: 26,
+              state.isWork ? Icons.coffee_rounded : Icons.work_rounded,
+              color: state.isWork ? AppColors.breakTime : AppColors.focus,
+              size: 24,
             ),
-            onPressed: () {
-              if (state.status == TimerStatus.running) {
-                provider.pauseTimer();
-              } else if (state.status == TimerStatus.paused) {
-                provider.resumeTimer();
-              } else {
-                provider.startInstantWork();
-              }
-            },
+            onPressed: provider.toggleWorkLife,
           ),
+
+          // ۳. سوییچ پومودورو و کرنومتر
           IconButton(
             tooltip: state.isStopwatch
-                ? 'توقف کرنومتر'
-                : 'کرنومتر آزاد (خواب و استراحت)',
+                ? 'سوییچ به پومودورو (سقف‌دار)'
+                : 'سوییچ به کرنومتر آزاد (بی‌پایان)',
             icon: Icon(
-              Icons.timer_outlined,
+              state.isStopwatch
+                  ? Icons.timelapse_rounded
+                  : Icons.timer_outlined,
               color: state.isStopwatch
                   ? AppColors.stopwatch
                   : AppColors.textSecondary,
               size: 22,
             ),
-            onPressed: () {
-              if (state.isStopwatch) {
-                provider.stopAndResetSession();
-              } else {
-                provider.startStopwatchMode();
-              }
-            },
+            onPressed: provider.toggleClockType,
           ),
           const SizedBox(width: 8),
 

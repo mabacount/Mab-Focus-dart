@@ -2,6 +2,10 @@ enum PomodoroMode { focus, shortBreak, longBreak, stopwatch }
 
 enum TimerStatus { idle, running, paused, overtime }
 
+enum AppRealm { work, life }
+
+enum ClockType { pomodoro, stopwatch }
+
 enum WindowPosture {
   dashboard,
   floatingCircle,
@@ -10,7 +14,8 @@ enum WindowPosture {
 }
 
 class PomodoroState {
-  final PomodoroMode mode;
+  final AppRealm realm;
+  final ClockType clockType;
   final TimerStatus status;
   final int elapsedSeconds;
   final int targetSeconds;
@@ -21,7 +26,8 @@ class PomodoroState {
   final String? activeTaskId;
 
   const PomodoroState({
-    this.mode = PomodoroMode.focus,
+    this.realm = AppRealm.work,
+    this.clockType = ClockType.pomodoro,
     this.status = TimerStatus.idle,
     this.elapsedSeconds = 0,
     this.targetSeconds = 1500,
@@ -32,11 +38,22 @@ class PomodoroState {
     this.activeTaskId,
   });
 
-  bool get isStopwatch => mode == PomodoroMode.stopwatch;
-  bool get isLifeSanctuaryLock => mode == PomodoroMode.longBreak;
+  bool get isWork => realm == AppRealm.work;
+  bool get isLife => realm == AppRealm.life;
+  bool get isStopwatch => clockType == ClockType.stopwatch;
+  bool get isPomodoro => clockType == ClockType.pomodoro;
+  bool get isLifeSanctuaryLock => isLife && targetSeconds >= 3600;
+
+  PomodoroMode get mode {
+    if (isStopwatch) return PomodoroMode.stopwatch;
+    if (isWork) return PomodoroMode.focus;
+    return targetSeconds >= 3600 ? PomodoroMode.longBreak : PomodoroMode.shortBreak;
+  }
+
   bool get isOvertime =>
       status == TimerStatus.overtime ||
-      (mode != PomodoroMode.stopwatch && elapsedSeconds > targetSeconds);
+      (!isStopwatch && elapsedSeconds > targetSeconds);
+
   int get remainingSeconds => targetSeconds - elapsedSeconds;
 
   double get progress {
@@ -70,7 +87,8 @@ class PomodoroState {
   }
 
   PomodoroState copyWith({
-    PomodoroMode? mode,
+    AppRealm? realm,
+    ClockType? clockType,
     TimerStatus? status,
     int? elapsedSeconds,
     int? targetSeconds,
@@ -81,7 +99,8 @@ class PomodoroState {
     String? activeTaskId,
   }) {
     return PomodoroState(
-      mode: mode ?? this.mode,
+      realm: realm ?? this.realm,
+      clockType: clockType ?? this.clockType,
       status: status ?? this.status,
       elapsedSeconds: elapsedSeconds ?? this.elapsedSeconds,
       targetSeconds: targetSeconds ?? this.targetSeconds,

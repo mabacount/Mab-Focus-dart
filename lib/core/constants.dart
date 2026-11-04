@@ -45,4 +45,5 @@ class AppDefaults {
       'gcal_breaklog_calendar_id';
   static const String settingKeyPlayMusicDuringBreaks =
       'play_music_during_breaks';
+  static const String settingKeyWidgetPinned = 'widget_is_pinned';
 }

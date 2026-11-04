@@ -42,6 +42,7 @@ class AppStateProvider extends ChangeNotifier {
   String _gcalToken = '';
   bool _isQuickMenuExpanded = false;
   String? _lastErgonomicNudgeMessage;
+  bool _isPinned = true;
 
   // ==================== Getters ====================
 
@@ -73,6 +74,7 @@ class AppStateProvider extends ChangeNotifier {
   String get gcalToken => _gcalToken;
   bool get isQuickMenuExpanded => _isQuickMenuExpanded;
   String? get lastErgonomicNudgeMessage => _lastErgonomicNudgeMessage;
+  bool get isPinned => _isPinned;
 
   List<ProjectNode> getSubProjects(String? macroProjectId) {
     if (macroProjectId == null) return [];
@@ -116,10 +118,14 @@ class AppStateProvider extends ChangeNotifier {
     final musicBreakStr = await db.getSetting(
         AppDefaults.settingKeyPlayMusicDuringBreaks,
         defaultValue: '0');
+    final pinnedStr = await db.getSetting(
+        AppDefaults.settingKeyWidgetPinned,
+        defaultValue: '1');
 
     _focusDurationMinutes = int.tryParse(focusStr ?? '25') ?? 25;
     _shortBreakDurationMinutes = int.tryParse(shortStr ?? '5') ?? 5;
     _longBreakDurationMinutes = int.tryParse(longStr ?? '60') ?? 60;
+    _isPinned = (pinnedStr ?? '1') == '1';
     MusicPlayerService.instance.setPlayDuringBreaks(musicBreakStr == '1');
 
     _txtLogPath = await TxtLoggerService.instance.getEffectiveLogFilePath();
@@ -219,6 +225,150 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ==================== کنترل دوگانه کار و زندگی (Work vs Life) ====================
+
+  Future<void> togglePin() async {
+    _isPinned = !_isPinned;
+    await DatabaseService.instance.setSetting(
+      AppDefaults.settingKeyWidgetPinned,
+      _isPinned ? '1' : '0',
+    );
+    await PlatformHelper.setPinned(_isPinned);
+    notifyListeners();
+  }
+
+  Future<void> togglePlayPause() async {
+    // در این سیستم توقف/وقفه انجمادی نداریم: بین کار و زندگی سوییچ می‌شود
+    await toggleWorkLife();
+  }
+
+  /// سوییچ مستقیم و پیوسته بین قلمرو «کار» و قلمرو «زندگی»
+  Future<void> toggleWorkLife() async {
+    final now = DateTime.now();
+
+    if (_pomodoroState.isWork) {
+      // از کار به زندگی
+      await _closeAndPersistActiveTask();
+
+      final int nextSets = _pomodoroState.completedSetsInCycle + 1;
+      final bool isLongBreak =
+          (nextSets % AppDurations.setsPerCycle) == 0 && nextSets > 0;
+      final int breakSec = isLongBreak
+          ? _longBreakDurationMinutes * 60
+          : _shortBreakDurationMinutes * 60;
+
+      final breakEntry = TaskLogEntry(
+        id: _uuid.v4(),
+        groupId: _uuid.v4(),
+        entryType: _pomodoroState.isStopwatch
+            ? 'stopwatch'
+            : (isLongBreak ? 'long_break' : 'short_break'),
+        title: _pomodoroState.isStopwatch
+            ? 'کرنومتر زندگی و استراحت آزاد'
+            : (isLongBreak ? 'استراحت طولانی (زندگی)' : 'استراحت کوتاه‌مدت'),
+        isUntitledDraft: false,
+        startTime: now,
+      );
+      await DatabaseService.instance.insertTaskLog(breakEntry);
+      _activeTaskLog = breakEntry;
+      _accumulatedTaskSeconds = 0;
+      _activeTaskElapsedSeconds = 0;
+      _taskSliceStartedAt = now;
+
+      _accumulatedPhaseSeconds = 0;
+      _phaseStartedAt = now;
+      _lastErgonomicNudgeMessage = null;
+
+      _pomodoroState = _pomodoroState.copyWith(
+        realm: AppRealm.life,
+        status: TimerStatus.running,
+        elapsedSeconds: 0,
+        targetSeconds: _pomodoroState.isStopwatch ? 0 : breakSec,
+        completedSetsInCycle: nextSets,
+        overtimeSeconds: 0,
+        lastNudgeAtOvertimeSeconds: 0,
+        activeTaskId: breakEntry.id,
+      );
+
+      MusicPlayerService.instance.onPomodoroModeChanged(_pomodoroState.mode);
+      _ensureTickerRunning();
+      await refreshAllData();
+    } else {
+      // از زندگی به کار
+      await _closeAndPersistActiveTask();
+
+      _accumulatedPhaseSeconds = 0;
+      _phaseStartedAt = now;
+      _lastErgonomicNudgeMessage = null;
+
+      final workEntry = TaskLogEntry(
+        id: _uuid.v4(),
+        groupId: _uuid.v4(),
+        entryType: _pomodoroState.isStopwatch ? 'stopwatch' : 'work',
+        title: AppDefaults.untitledTaskTitle,
+        isUntitledDraft: true,
+        startTime: now,
+        pomodoroSetIndex:
+            (_pomodoroState.completedSetsInCycle % AppDurations.setsPerCycle) + 1,
+      );
+      await DatabaseService.instance.insertTaskLog(workEntry);
+      _activeTaskLog = workEntry;
+      _accumulatedTaskSeconds = 0;
+      _activeTaskElapsedSeconds = 0;
+      _taskSliceStartedAt = now;
+
+      _pomodoroState = _pomodoroState.copyWith(
+        realm: AppRealm.work,
+        status: TimerStatus.running,
+        elapsedSeconds: 0,
+        targetSeconds:
+            _pomodoroState.isStopwatch ? 0 : (_focusDurationMinutes * 60),
+        overtimeSeconds: 0,
+        lastNudgeAtOvertimeSeconds: 0,
+        activeTaskId: workEntry.id,
+      );
+
+      MusicPlayerService.instance.onPomodoroModeChanged(PomodoroMode.focus);
+      _ensureTickerRunning();
+      await refreshAllData();
+    }
+  }
+
+  /// سوییچ بین پومودورو (شمارش معکوس با هدف) و کرنومتر (شمارش رو به بالا)
+  Future<void> toggleClockType() async {
+    final bool willBeStopwatch = !_pomodoroState.isStopwatch;
+
+    if (willBeStopwatch) {
+      _pomodoroState = _pomodoroState.copyWith(
+        clockType: ClockType.stopwatch,
+        targetSeconds: 0,
+        overtimeSeconds: 0,
+        status: _pomodoroState.status == TimerStatus.paused
+            ? TimerStatus.paused
+            : TimerStatus.running,
+      );
+    } else {
+      final int target = _pomodoroState.isWork
+          ? _focusDurationMinutes * 60
+          : _shortBreakDurationMinutes * 60;
+
+      final newStatus = _pomodoroState.elapsedSeconds >= target
+          ? TimerStatus.overtime
+          : (_pomodoroState.status == TimerStatus.paused
+              ? TimerStatus.paused
+              : TimerStatus.running);
+
+      _pomodoroState = _pomodoroState.copyWith(
+        clockType: ClockType.pomodoro,
+        targetSeconds: target,
+        status: newStatus,
+      );
+    }
+
+    _ensureTickerRunning();
+    notifyListeners();
+  }
+
   // ==================== کنترل پومودورو، تسک‌ها و کرنومتر ====================
 
   Future<void> startInstantWork({
@@ -231,11 +381,13 @@ class AppStateProvider extends ChangeNotifier {
     final now = DateTime.now();
 
     if (_pomodoroState.status == TimerStatus.idle ||
-        _pomodoroState.mode != PomodoroMode.focus) {
+        _pomodoroState.realm != AppRealm.work ||
+        _pomodoroState.isStopwatch) {
       _accumulatedPhaseSeconds = 0;
       _phaseStartedAt = now;
       _pomodoroState = _pomodoroState.copyWith(
-        mode: PomodoroMode.focus,
+        realm: AppRealm.work,
+        clockType: ClockType.pomodoro,
         status: TimerStatus.running,
         elapsedSeconds: 0,
         targetSeconds: _focusDurationMinutes * 60,
@@ -287,9 +439,8 @@ class AppStateProvider extends ChangeNotifier {
     await refreshAllData();
   }
 
-  /// سوییچ به کرنومتر آزاد (Stopwatch Mode) برای خواب و فعالیت‌های بدون سقف
-  Future<void> startStopwatchMode({
-    String title = 'خواب و استراحت عمیق',
+  Future<void> startWorkStopwatch({
+    String? title,
     String? macroProjectId,
     String? subProjectId,
   }) async {
@@ -304,7 +455,9 @@ class AppStateProvider extends ChangeNotifier {
       id: _uuid.v4(),
       groupId: _uuid.v4(),
       entryType: 'stopwatch',
-      title: title,
+      title: (title == null || title.trim().isEmpty)
+          ? 'کار با کرنومتر آزاد'
+          : title.trim(),
       isUntitledDraft: false,
       macroProjectId: macroProjectId,
       subProjectId: subProjectId,
@@ -318,7 +471,8 @@ class AppStateProvider extends ChangeNotifier {
     _taskSliceStartedAt = now;
 
     _pomodoroState = _pomodoroState.copyWith(
-      mode: PomodoroMode.stopwatch,
+      realm: AppRealm.work,
+      clockType: ClockType.stopwatch,
       status: TimerStatus.running,
       elapsedSeconds: 0,
       targetSeconds: 0,
@@ -327,6 +481,57 @@ class AppStateProvider extends ChangeNotifier {
 
     _ensureTickerRunning();
     await refreshAllData();
+  }
+
+  Future<void> startLifeStopwatch({
+    String title = 'زندگی و استراحت آزاد',
+  }) async {
+    await _closeAndPersistActiveTask();
+    final now = DateTime.now();
+
+    _accumulatedPhaseSeconds = 0;
+    _phaseStartedAt = now;
+    _lastErgonomicNudgeMessage = null;
+
+    final entry = TaskLogEntry(
+      id: _uuid.v4(),
+      groupId: _uuid.v4(),
+      entryType: 'stopwatch',
+      title: title,
+      isUntitledDraft: false,
+      startTime: now,
+    );
+
+    await DatabaseService.instance.insertTaskLog(entry);
+    _activeTaskLog = entry;
+    _accumulatedTaskSeconds = 0;
+    _activeTaskElapsedSeconds = 0;
+    _taskSliceStartedAt = now;
+
+    _pomodoroState = _pomodoroState.copyWith(
+      realm: AppRealm.life,
+      clockType: ClockType.stopwatch,
+      status: TimerStatus.running,
+      elapsedSeconds: 0,
+      targetSeconds: 0,
+      activeTaskId: entry.id,
+    );
+
+    _ensureTickerRunning();
+    await refreshAllData();
+  }
+
+  /// سوییچ به کرنومتر آزاد عمومی (برای سازگاری با نسخه‌های قبلی)
+  Future<void> startStopwatchMode({
+    String title = 'کرنومتر آزاد',
+    String? macroProjectId,
+    String? subProjectId,
+  }) async {
+    await startWorkStopwatch(
+      title: title,
+      macroProjectId: macroProjectId,
+      subProjectId: subProjectId,
+    );
   }
 
   /// ادامه یک تسک باز قبلی (Multi-Slice Resume)
@@ -418,17 +623,15 @@ class AppStateProvider extends ChangeNotifier {
     await TxtLoggerService.instance.syncTxtFile();
   }
 
-  /// شروع استراحت با ثبت رکورد استراحت در دیتابیس و بررسی قوانین استراحت پروژه
+  /// شروع استراحت با ثبت رکورد استراحت در دیتابیس
   Future<void> startBreak() async {
     final now = DateTime.now();
-    final int nextSets = _pomodoroState.mode == PomodoroMode.focus
+    final int nextSets = _pomodoroState.isWork
         ? _pomodoroState.completedSetsInCycle + 1
         : _pomodoroState.completedSetsInCycle;
 
     final bool isLongBreak =
         (nextSets % AppDurations.setsPerCycle) == 0 && nextSets > 0;
-    final PomodoroMode nextMode =
-        isLongBreak ? PomodoroMode.longBreak : PomodoroMode.shortBreak;
     final int breakSec = isLongBreak
         ? _longBreakDurationMinutes * 60
         : _shortBreakDurationMinutes * 60;
@@ -464,7 +667,8 @@ class AppStateProvider extends ChangeNotifier {
     _lastErgonomicNudgeMessage = null;
 
     _pomodoroState = _pomodoroState.copyWith(
-      mode: nextMode,
+      realm: AppRealm.life,
+      clockType: ClockType.pomodoro,
       status: TimerStatus.running,
       elapsedSeconds: 0,
       targetSeconds: breakSec,
@@ -473,7 +677,7 @@ class AppStateProvider extends ChangeNotifier {
       lastNudgeAtOvertimeSeconds: 0,
     );
 
-    MusicPlayerService.instance.onPomodoroModeChanged(nextMode);
+    MusicPlayerService.instance.onPomodoroModeChanged(_pomodoroState.mode);
     _ensureTickerRunning();
     await refreshAllData();
   }
@@ -526,7 +730,8 @@ class AppStateProvider extends ChangeNotifier {
     _lastErgonomicNudgeMessage = null;
 
     _pomodoroState = PomodoroState(
-      mode: PomodoroMode.focus,
+      realm: AppRealm.work,
+      clockType: ClockType.pomodoro,
       status: TimerStatus.idle,
       elapsedSeconds: 0,
       targetSeconds: _focusDurationMinutes * 60,
@@ -577,7 +782,9 @@ class AppStateProvider extends ChangeNotifier {
       await PlatformHelper.switchToDashboardMode();
     } else if (posture == WindowPosture.floatingCircle) {
       await PlatformHelper.switchToFloatingWidgetMode(
-          isSheetExpanded: expanded);
+        isSheetExpanded: expanded,
+        isPinned: _isPinned,
+      );
     } else if (posture == WindowPosture.edgeDockedLeft) {
       await PlatformHelper.switchToEdgeDockedMode(true);
     } else if (posture == WindowPosture.edgeDockedRight) {
@@ -590,7 +797,9 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
     if (_pomodoroState.windowPosture == WindowPosture.floatingCircle) {
       await PlatformHelper.switchToFloatingWidgetMode(
-          isSheetExpanded: expanded);
+        isSheetExpanded: expanded,
+        isPinned: _isPinned,
+      );
     }
   }
 

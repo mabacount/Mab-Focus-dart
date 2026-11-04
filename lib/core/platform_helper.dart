@@ -9,13 +9,19 @@ class PlatformHelper {
   static bool get isDesktop =>
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
+  static const double baseCircleSize = 68.0;
+  static const double hoveredWidth = 340.0;
+  static const double hoveredHeight = 145.0;
+  static const double expandedSheetWidth = 340.0;
+  static const double expandedSheetHeight = 460.0;
+
   static Future<void> initWindowManager() async {
     if (!isDesktop) return;
     await windowManager.ensureInitialized();
 
     const WindowOptions windowOptions = WindowOptions(
       size: Size(1180, 780),
-      minimumSize: Size(18, 160),
+      minimumSize: Size(18, 140),
       center: true,
       backgroundColor: AppColors.background,
       skipTaskbar: false,
@@ -40,24 +46,61 @@ class PlatformHelper {
     await windowManager.center();
   }
 
+  static Future<void> setPinned(bool isPinned) async {
+    if (!isDesktop) return;
+    await windowManager.setAlwaysOnTop(isPinned);
+  }
+
+  static Future<bool> isNearLeftEdge() async {
+    if (!isDesktop) return false;
+    try {
+      final display = await screenRetriever.getPrimaryDisplay();
+      final currentPos = await windowManager.getPosition();
+      final screenLeft = display.visiblePosition?.dx ?? 0.0;
+      // اگر پنجره نزدیک لبه چپ باشد
+      if ((currentPos.dx - screenLeft) < 140.0) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// تغییر وضعیت پنجره به حالت شناور ثابت و پایدار بدون فراخوانی در زمان هاور
   static Future<void> switchToFloatingWidgetMode({
-    bool isHovered = false,
     bool isSheetExpanded = false,
+    bool isPinned = true,
   }) async {
     if (!isDesktop) return;
+
     await windowManager.setAsFrameless();
     await windowManager.setBackgroundColor(Colors.transparent);
     await windowManager.setHasShadow(false);
-    await windowManager.setAlwaysOnTop(true);
+    await windowManager.setAlwaysOnTop(isPinned);
     await windowManager.setResizable(false);
 
-    if (isSheetExpanded) {
-      await windowManager.setSize(const Size(320, 440));
-    } else if (isHovered) {
-      await windowManager.setSize(const Size(190, 175));
-    } else {
-      await windowManager.setSize(const Size(116, 116));
-    }
+    final display = await screenRetriever.getPrimaryDisplay();
+    final Offset currentPos = await windowManager.getPosition();
+
+    final double screenLeft = display.visiblePosition?.dx ?? 0.0;
+    final double screenTop = display.visiblePosition?.dy ?? 0.0;
+    final double screenWidth = display.size.width;
+    final double screenHeight = display.size.height;
+
+    final double targetWidth =
+        isSheetExpanded ? expandedSheetWidth : hoveredWidth;
+    final double targetHeight =
+        isSheetExpanded ? expandedSheetHeight : hoveredHeight;
+
+    final double maxX = screenLeft + screenWidth - targetWidth;
+    final double maxY = screenTop + screenHeight - targetHeight;
+
+    final double newX =
+        currentPos.dx.clamp(screenLeft, maxX > screenLeft ? maxX : screenLeft);
+    final double newY =
+        currentPos.dy.clamp(screenTop, maxY > screenTop ? maxY : screenTop);
+
+    await windowManager.setSize(Size(targetWidth, targetHeight));
+    await windowManager.setPosition(Offset(newX, newY));
   }
 
   static Future<void> switchToEdgeDockedMode(bool isLeft) async {
@@ -70,25 +113,30 @@ class PlatformHelper {
     await windowManager.setHasShadow(false);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setResizable(false);
-    await windowManager.setSize(const Size(18, 160));
+    await windowManager.setSize(const Size(18, 140));
 
     final double targetX = isLeft ? 0.0 : (display.size.width - 18.0);
     final double targetY =
-        currentPos.dy.clamp(40.0, display.size.height - 200.0);
+        currentPos.dy.clamp(40.0, display.size.height - 180.0);
     await windowManager.setPosition(Offset(targetX, targetY));
   }
 
   static Future<WindowPosture?> checkEdgeSnapCondition() async {
     if (!isDesktop) return null;
-    final display = await screenRetriever.getPrimaryDisplay();
-    final Offset pos = await windowManager.getPosition();
-    final Size winSize = await windowManager.getSize();
+    try {
+      final display = await screenRetriever.getPrimaryDisplay();
+      final Offset pos = await windowManager.getPosition();
+      final Size winSize = await windowManager.getSize();
 
-    if (pos.dx <= 20.0) {
-      return WindowPosture.edgeDockedLeft;
-    } else if (pos.dx + winSize.width >= display.size.width - 20.0) {
-      return WindowPosture.edgeDockedRight;
-    }
+      final double screenLeft = display.visiblePosition?.dx ?? 0.0;
+      final double screenRight = screenLeft + display.size.width;
+
+      if (pos.dx <= screenLeft + 15.0) {
+        return WindowPosture.edgeDockedLeft;
+      } else if (pos.dx + winSize.width >= screenRight - 15.0) {
+        return WindowPosture.edgeDockedRight;
+      }
+    } catch (_) {}
     return null;
   }
 }
