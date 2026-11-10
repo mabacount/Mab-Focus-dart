@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants.dart';
+import '../../core/date_time_utils.dart';
 import '../../core/platform_helper.dart';
 import '../../models/pomodoro_state.dart';
 import '../../providers/app_state_provider.dart';
@@ -223,7 +224,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(width: 12),
               Tooltip(
                 message:
-                    'پیشرفت چرخه Flowmodoro: $wMin از $wTargetMin دقیقه کار | ذخیره استراحت کوتاه: $bankMin دقیقه | بدهی استراحت: $debtMin دقیقه',
+                    'چرخه Flowmodoro: $wMin از $wTargetMin دقیقه کار | ذخیره کوتاه: ${DateTimeUtils.formatDurationHms(state.earnedShortBreakSeconds)} | بدهی: ${DateTimeUtils.formatDurationHms(state.breakDebtSeconds)}\n${provider.breakTargetExplanationFa}',
                 child: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
@@ -239,7 +240,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           size: 14, color: palette.accent),
                       const SizedBox(width: 4),
                       Text(
-                        '$wMin/${wTargetMin}m • بانک: +${bankMin}m${debtMin > 0 ? " (-${debtMin}m)" : ""}',
+                        (state.isLife && state.isInLongBreak)
+                            ? '$wMin/${wTargetMin}m • طولانی: ${DateTimeUtils.formatDurationHms(provider.activeOrPreviewBreakTargetSeconds)}'
+                            : (state.isWork &&
+                                    provider.activeWorkSecondsSinceCycleReset >=
+                                        60)
+                                ? '$wMin/${wTargetMin}m • الان: ${DateTimeUtils.formatDurationHms(provider.projectedBreakTargetSeconds)}${debtMin > 0 ? " (-${debtMin}m)" : ""}'
+                                : '$wMin/${wTargetMin}m • ذخیره: +${bankMin}m${debtMin > 0 ? " (-${debtMin}m)" : ""}',
                         style: GoogleFonts.jetBrainsMono(
                           fontSize: 11,
                           color: AppColors.textPrimary,

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../ui/shared/work_note_window_coordinator.dart';
 import '../core/constants.dart';
+import '../core/date_time_utils.dart';
 import '../core/platform_helper.dart';
 import '../models/music_track.dart';
 import '../models/outcome_item.dart';
@@ -38,6 +39,24 @@ class AppStateProvider extends ChangeNotifier {
   DateTime? _recordSliceStartedAt;
   int _accumulatedRecordSeconds = 0;
   Timer? _ticker;
+  Future<void> _mutationQueue = Future<void>.value();
+
+  Future<T> _synchronized<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _mutationQueue = _mutationQueue.then((_) async {
+      try {
+        final result = await action();
+        if (!completer.isCompleted) {
+          completer.complete(result);
+        }
+      } catch (e, st) {
+        if (!completer.isCompleted) {
+          completer.completeError(e, st);
+        }
+      }
+    });
+    return completer.future;
+  }
 
   List<ProjectNode> _projects = [];
   List<OutcomeItem> _outcomes = [];
@@ -147,6 +166,106 @@ class AppStateProvider extends ChangeNotifier {
   int get breakDebtSeconds => _breakDebtSeconds;
   bool get isInLongBreak => _isInLongBreak;
   int get currentBreakTargetSeconds => _currentBreakTargetSeconds;
+
+  int get activeWorkSecondsSinceCycleReset {
+    final active = _activeRecord;
+    if (active == null || !active.isWork) return 0;
+    if (active.startTime.isBefore(_lastCycleResetAt)) {
+      final int preResetSec = math.max(
+          0, _lastCycleResetAt.difference(active.startTime).inSeconds);
+      return math.max(0, _activeRecordElapsedSeconds - preResetSec);
+    }
+    return math.max(0, _activeRecordElapsedSeconds);
+  }
+
+  int get projectedCycleWorkSeconds =>
+      _cycleWorkSeconds + activeWorkSecondsSinceCycleReset;
+
+  int get projectedEarnedShortBreakSeconds =>
+      _earnedShortBreakSeconds +
+      (activeWorkSecondsSinceCycleReset ~/ _breakRatio);
+
+  bool get isProjectedLongBreak => _pomodoroState.isLife
+      ? _isInLongBreak
+      : (projectedCycleWorkSeconds >= (_cycleWorkTargetMinutes * 60));
+
+  int get longBreakOvershootSeconds {
+    final int wTarget = _cycleWorkTargetMinutes * 60;
+    if (_cycleWorkSeconds <= wTarget) return 0;
+    return (_cycleWorkSeconds - wTarget) ~/ _breakRatio;
+  }
+
+  int get projectedBreakTargetSeconds {
+    return _previewLifeBreakTargetFor(
+      cycleWorkSeconds: projectedCycleWorkSeconds,
+      earnedShortBreakSeconds: projectedEarnedShortBreakSeconds,
+      breakDebtSeconds: _breakDebtSeconds,
+    );
+  }
+
+  int get activeOrPreviewBreakTargetSeconds {
+    if (_pomodoroState.isLife &&
+        _pomodoroState.isPomodoro &&
+        _pomodoroState.targetSeconds > 0) {
+      return _pomodoroState.targetSeconds;
+    }
+    return _previewLifeBreakTarget();
+  }
+
+  String get breakTargetExplanationFa {
+    final int wTarget = _cycleWorkTargetMinutes * 60;
+    final int minBreakSec = _shortBreakDurationMinutes * 60;
+
+    if (_pomodoroState.isLife && _pomodoroState.isPomodoro) {
+      final int activeTarget = _pomodoroState.targetSeconds > 0
+          ? _pomodoroState.targetSeconds
+          : _previewLifeBreakTarget();
+      if (_isInLongBreak) {
+        final int overshoot = longBreakOvershootSeconds;
+        final String basePart = '$_longBreakDurationMinutesد پایه';
+        final String debtPart = _breakDebtSeconds > 0
+            ? ' − ${DateTimeUtils.formatDurationHms(_breakDebtSeconds)} بدهی'
+            : '';
+        final String overPart = overshoot > 0
+            ? ' + ${DateTimeUtils.formatDurationHms(overshoot)} سرریز'
+            : '';
+        return 'استراحت طولانی پایان چرخه: ${DateTimeUtils.formatDurationHms(activeTarget)} ($basePart$debtPart$overPart)';
+      }
+      if (_earnedShortBreakSeconds < minBreakSec) {
+        return 'استراحت کوتاه: ${DateTimeUtils.formatDurationHms(activeTarget)} (حداقل $_shortBreakDurationMinutes دقیقه؛ ذخیره واقعی: ${DateTimeUtils.formatDurationHms(_earnedShortBreakSeconds)})';
+      }
+      return 'استراحت کوتاه: ${DateTimeUtils.formatDurationHms(activeTarget)} (متناسب با کار چرخه جاری)';
+    }
+
+    final int activeSec = activeWorkSecondsSinceCycleReset;
+    final int projWork = _cycleWorkSeconds + activeSec;
+    final int sessionEarned = activeSec ~/ _breakRatio;
+    final int projBank = _earnedShortBreakSeconds + sessionEarned;
+    final int projTarget = _previewLifeBreakTargetFor(
+      cycleWorkSeconds: projWork,
+      earnedShortBreakSeconds: projBank,
+      breakDebtSeconds: _breakDebtSeconds,
+    );
+
+    if (projWork >= wTarget) {
+      final int overshoot = (projWork - wTarget) ~/ _breakRatio;
+      final String debtPart = _breakDebtSeconds > 0
+          ? ' − ${DateTimeUtils.formatDurationHms(_breakDebtSeconds)} بدهی'
+          : '';
+      final String overPart = overshoot > 0
+          ? ' + ${DateTimeUtils.formatDurationHms(overshoot)} سرریز'
+          : '';
+      return 'استراحت بعدی (طولانی): ${DateTimeUtils.formatDurationHms(projTarget)} (سقف $_cycleWorkTargetMinutesد تکمیل است؛ $_longBreakDurationMinutesد پایه$debtPart$overPart)';
+    }
+
+    if (activeSec > 0 && _earnedShortBreakSeconds > 0 && sessionEarned > 0) {
+      return 'استراحت بعدی (کوتاه): ${DateTimeUtils.formatDurationHms(projTarget)} (ذخیره قبلی ${DateTimeUtils.formatDurationHms(_earnedShortBreakSeconds)} + این جلسه ${DateTimeUtils.formatDurationHms(sessionEarned)})';
+    }
+    if (projBank < minBreakSec) {
+      return 'استراحت بعدی (کوتاه): حداقل $_shortBreakDurationMinutesد (ذخیره فعلی: ${DateTimeUtils.formatDurationHms(projBank)})';
+    }
+    return 'استراحت بعدی (کوتاه): ${DateTimeUtils.formatDurationHms(projTarget)}';
+  }
 
   String get txtLogPath => _txtLogPath;
   String get gcalToken => _gcalToken;
@@ -583,55 +702,65 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> closeRecoveredRecordAtTimeAndStartNew({
     required DateTime closedAt,
     AppRealm? nextRealm,
-  }) async {
-    final rec = _activeRecord;
-    if (rec == null) return;
+  }) {
+    return _synchronized(() async {
+      final rec = _activeRecord;
+      if (rec == null) return;
 
-    final now = DateTime.now();
-    DateTime safeClosedAt = closedAt;
-    if (safeClosedAt.isBefore(rec.startTime)) {
-      safeClosedAt = rec.startTime.add(const Duration(seconds: 1));
-    }
-    if (safeClosedAt.isAfter(now)) {
-      safeClosedAt = now;
-    }
+      final now = DateTime.now();
+      DateTime safeClosedAt = closedAt;
+      if (safeClosedAt.isBefore(rec.startTime)) {
+        safeClosedAt = rec.startTime.add(const Duration(seconds: 1));
+      }
+      if (safeClosedAt.isAfter(now)) {
+        safeClosedAt = now;
+      }
 
-    final int dur =
-        math.max(1, safeClosedAt.difference(rec.startTime).inSeconds);
-    final int earned = rec.isWork ? (dur ~/ _breakRatio) : 0;
+      final int dur =
+          math.max(1, safeClosedAt.difference(rec.startTime).inSeconds);
+      final int earned = rec.isWork ? (dur ~/ _breakRatio) : 0;
 
-    final closedRec = rec.copyWith(
-      endTime: safeClosedAt,
-      durationSeconds: dur,
-      earnedBreakSeconds: earned,
-      isEdited: true,
-      editedAt: now,
-      editNote: 'اصلاح زمان پایان پس از بازیابی',
-    );
-    await DatabaseService.instance.updateTimeRecord(closedRec);
-
-    if (closedRec.isWork) {
-      _applyWorkSliceToBank(dur);
-    } else {
-      _applyLifeSliceToBank(
-        dur,
-        project: getProjectById(closedRec.projectId),
-        resetTime: safeClosedAt,
+      final closedRec = rec.copyWith(
+        endTime: safeClosedAt,
+        durationSeconds: dur,
+        earnedBreakSeconds: earned,
+        isEdited: true,
+        editedAt: now,
+        editNote: 'اصلاح زمان پایان پس از بازیابی',
       );
-    }
+      await DatabaseService.instance.updateTimeRecord(closedRec);
 
-    _activeRecord = null;
-    _recoveredOpenRecord = null;
-    _recordSliceStartedAt = null;
-    _accumulatedRecordSeconds = 0;
-    _activeRecordElapsedSeconds = 0;
+      final int bankSeconds = _effectiveBankDurationForSlice(
+        startTime: closedRec.startTime,
+        endTime: safeClosedAt,
+        recordedDurationSeconds: dur,
+      );
 
-    final AppRealm targetRealm = nextRealm ??
-        (closedRec.isWork ? AppRealm.life : AppRealm.work);
-    await _startNewContinuousSliceAt(
-      startTime: safeClosedAt,
-      targetRealm: targetRealm,
-    );
+      if (bankSeconds > 0) {
+        if (closedRec.isWork) {
+          _applyWorkSliceToBank(bankSeconds);
+        } else {
+          _applyLifeSliceToBank(
+            bankSeconds,
+            project: getProjectById(closedRec.projectId),
+            resetTime: safeClosedAt,
+          );
+        }
+      }
+
+      _activeRecord = null;
+      _recoveredOpenRecord = null;
+      _recordSliceStartedAt = null;
+      _accumulatedRecordSeconds = 0;
+      _activeRecordElapsedSeconds = 0;
+
+      final AppRealm targetRealm = nextRealm ??
+          (closedRec.isWork ? AppRealm.life : AppRealm.work);
+      await _startNewContinuousSliceAt(
+        startTime: safeClosedAt,
+        targetRealm: targetRealm,
+      );
+    });
   }
 
   Future<void> _onExternalSessionNoteAdded() async {
@@ -697,6 +826,23 @@ class AppStateProvider extends ChangeNotifier {
     ]);
   }
 
+  int _effectiveBankDurationForSlice({
+    required DateTime startTime,
+    required DateTime endTime,
+    required int recordedDurationSeconds,
+  }) {
+    if (!endTime.isAfter(_lastCycleResetAt)) {
+      return 0;
+    }
+    if (startTime.isBefore(_lastCycleResetAt)) {
+      return math.min(
+        math.max(0, recordedDurationSeconds),
+        math.max(0, endTime.difference(_lastCycleResetAt).inSeconds),
+      );
+    }
+    return math.max(0, recordedDurationSeconds);
+  }
+
   void _applyWorkSliceToBank(int workSeconds) {
     final int safeSec = math.max(0, workSeconds);
     final int earned = safeSec ~/ _breakRatio;
@@ -704,18 +850,30 @@ class AppStateProvider extends ChangeNotifier {
     _earnedShortBreakSeconds += earned;
   }
 
-  int _previewLifeBreakTarget() {
+  int _previewLifeBreakTargetFor({
+    required int cycleWorkSeconds,
+    required int earnedShortBreakSeconds,
+    required int breakDebtSeconds,
+  }) {
     final int wTarget = _cycleWorkTargetMinutes * 60;
     final int minBreakSec = _shortBreakDurationMinutes * 60;
     final int longBreakBaseSec = _longBreakDurationMinutes * 60;
 
-    if (_cycleWorkSeconds >= wTarget) {
-      final int overshootBreak = (_cycleWorkSeconds - wTarget) ~/ _breakRatio;
+    if (cycleWorkSeconds >= wTarget) {
+      final int overshootBreak = (cycleWorkSeconds - wTarget) ~/ _breakRatio;
       return math.max(
-          minBreakSec, longBreakBaseSec - _breakDebtSeconds + overshootBreak);
+          minBreakSec, longBreakBaseSec - breakDebtSeconds + overshootBreak);
     } else {
-      return math.max(minBreakSec, _earnedShortBreakSeconds);
+      return math.max(minBreakSec, earnedShortBreakSeconds);
     }
+  }
+
+  int _previewLifeBreakTarget() {
+    return _previewLifeBreakTargetFor(
+      cycleWorkSeconds: _cycleWorkSeconds,
+      earnedShortBreakSeconds: _earnedShortBreakSeconds,
+      breakDebtSeconds: _breakDebtSeconds,
+    );
   }
 
   int _enterLifeBreakTarget() {
@@ -740,12 +898,25 @@ class AppStateProvider extends ChangeNotifier {
     int lifeSeconds, {
     ProjectNode? project,
     DateTime? resetTime,
+    bool preserveOngoingBreakIfWithinLife = false,
   }) {
     final int safeSec = math.max(0, lifeSeconds);
     final int autoResetThresholdSec = _cycleAutoResetMinutes * 60;
     final bool isSleep = _isSleepProjectOrAncestor(project?.id);
 
-    if (safeSec >= autoResetThresholdSec || isSleep || _isInLongBreak) {
+    // در حال استراحت طولانی هستیم و کاربر فقط در همان قلمرو زندگی برش دیگری (غیراز خواب و زیر ۹۰د) باز کرده:
+    // چرخه تا لحظه خروج واقعی از زندگی (یا خواب/۹۰د) حفظ می‌شود تا بدهی جعلی تولید نشود.
+    if (preserveOngoingBreakIfWithinLife &&
+        _isInLongBreak &&
+        safeSec < autoResetThresholdSec &&
+        !isSleep) {
+      return;
+    }
+
+    if (safeSec >= autoResetThresholdSec ||
+        isSleep ||
+        _isInLongBreak ||
+        (_earnedShortBreakSeconds == 0 && _cycleWorkSeconds < _breakRatio)) {
       _cycleWorkSeconds = 0;
       _earnedShortBreakSeconds = 0;
       _breakDebtSeconds = 0;
@@ -762,7 +933,9 @@ class AppStateProvider extends ChangeNotifier {
       _breakDebtSeconds += overBreak;
       _earnedShortBreakSeconds = 0;
     }
-    _currentBreakTargetSeconds = 0;
+    if (!preserveOngoingBreakIfWithinLife) {
+      _currentBreakTargetSeconds = 0;
+    }
   }
 
   /// محاسبه مجدد بانک استراحت چرخه جاری از روی تاریخچه بسته شده بعد از ریست (برای اصلاح همگام بعد از Swap یا ویرایش)
@@ -771,8 +944,7 @@ class AppStateProvider extends ChangeNotifier {
     final autoResetThreshold = _cycleAutoResetMinutes * 60;
 
     final recordsInCycle = _timeRecords
-        .where((r) =>
-            r.endTime != null && !r.startTime.isBefore(_lastCycleResetAt))
+        .where((r) => r.endTime != null && r.endTime!.isAfter(_lastCycleResetAt))
         .toList()
       ..sort((a, b) => a.startTime.compareTo(b.startTime));
 
@@ -780,26 +952,58 @@ class AppStateProvider extends ChangeNotifier {
     int b = 0;
     int d = 0;
     bool inLong = false;
+    int cumulativeLongLifeSec = 0;
     DateTime latestReset = _lastCycleResetAt;
 
-    for (final rec in recordsInCycle) {
+    for (int i = 0; i < recordsInCycle.length; i++) {
+      final rec = recordsInCycle[i];
+      final DateTime recEnd = rec.endTime!;
+      if (!recEnd.isAfter(latestReset)) continue;
+      final int effectiveSec = rec.startTime.isBefore(latestReset)
+          ? math.min(
+              math.max(0, rec.durationSeconds),
+              math.max(0, recEnd.difference(latestReset).inSeconds),
+            )
+          : math.max(0, rec.durationSeconds);
+      if (effectiveSec <= 0) continue;
+
       if (rec.isWork) {
-        w += rec.durationSeconds;
-        b += rec.durationSeconds ~/ _breakRatio;
+        cumulativeLongLifeSec = 0;
+        w += effectiveSec;
+        b += effectiveSec ~/ _breakRatio;
         inLong = w >= wTarget;
       } else {
         final bool isSleep = _isSleepProjectOrAncestor(rec.projectId);
-        if (rec.durationSeconds >= autoResetThreshold || isSleep || inLong) {
+        final bool hasFollowingLifeSlice =
+            i + 1 < recordsInCycle.length && !recordsInCycle[i + 1].isWork;
+        final bool isFollowedByActiveLife = i == recordsInCycle.length - 1 &&
+            _activeRecord != null &&
+            _activeRecord!.isLife;
+
+        if (inLong &&
+            !isSleep &&
+            effectiveSec < autoResetThreshold &&
+            (cumulativeLongLifeSec + effectiveSec) < autoResetThreshold &&
+            (hasFollowingLifeSlice || isFollowedByActiveLife)) {
+          cumulativeLongLifeSec += effectiveSec;
+          continue;
+        }
+
+        cumulativeLongLifeSec = 0;
+        if (effectiveSec >= autoResetThreshold ||
+            isSleep ||
+            inLong ||
+            (b == 0 && w < _breakRatio)) {
           w = 0;
           b = 0;
           d = 0;
           inLong = false;
-          latestReset = rec.endTime ?? rec.startTime;
+          latestReset = recEnd;
         } else {
-          if (rec.durationSeconds < b) {
-            b -= rec.durationSeconds;
+          if (effectiveSec < b) {
+            b -= effectiveSec;
           } else {
-            d += (rec.durationSeconds - b);
+            d += (effectiveSec - b);
             b = 0;
           }
         }
@@ -812,8 +1016,23 @@ class AppStateProvider extends ChangeNotifier {
     _lastCycleResetAt = latestReset;
 
     int targetSec = _pomodoroState.targetSeconds;
-    if (_activeRecord != null && _activeRecord!.isLife && _pomodoroState.isPomodoro) {
+    TimerStatus newStatus = _pomodoroState.status;
+    int newOvertime = _pomodoroState.overtimeSeconds;
+
+    if (_activeRecord != null &&
+        _activeRecord!.isLife &&
+        _pomodoroState.isPomodoro) {
       targetSec = _enterLifeBreakTarget();
+      if (_pomodoroState.status == TimerStatus.running ||
+          _pomodoroState.status == TimerStatus.overtime) {
+        if (targetSec > 0 && _pomodoroState.elapsedSeconds >= targetSec) {
+          newStatus = TimerStatus.overtime;
+          newOvertime = _pomodoroState.elapsedSeconds - targetSec;
+        } else {
+          newStatus = TimerStatus.running;
+          newOvertime = 0;
+        }
+      }
     } else if (_activeRecord == null || _activeRecord!.isWork) {
       _isInLongBreak = false;
       _currentBreakTargetSeconds = 0;
@@ -826,6 +1045,8 @@ class AppStateProvider extends ChangeNotifier {
       cycleWorkTargetSeconds: wTarget,
       isInLongBreak: _isInLongBreak,
       targetSeconds: targetSec,
+      status: newStatus,
+      overtimeSeconds: newOvertime,
     );
 
     await _persistFlowmodoroState();
@@ -833,46 +1054,48 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   /// دکمه ریست دستی چرخه Flowmodoro (چالش ۱)
-  Future<void> resetFlowmodoroCycle({DateTime? atTime}) async {
-    _cycleWorkSeconds = 0;
-    _earnedShortBreakSeconds = 0;
-    _breakDebtSeconds = 0;
-    _isInLongBreak = false;
-    _lastCycleResetAt = atTime ?? DateTime.now();
+  Future<void> resetFlowmodoroCycle({DateTime? atTime}) {
+    return _synchronized(() async {
+      _cycleWorkSeconds = 0;
+      _earnedShortBreakSeconds = 0;
+      _breakDebtSeconds = 0;
+      _isInLongBreak = false;
+      _lastCycleResetAt = atTime ?? DateTime.now();
 
-    int newTarget = _pomodoroState.targetSeconds;
-    TimerStatus newStatus = _pomodoroState.status;
-    int newOvertime = _pomodoroState.overtimeSeconds;
+      int newTarget = _pomodoroState.targetSeconds;
+      TimerStatus newStatus = _pomodoroState.status;
+      int newOvertime = _pomodoroState.overtimeSeconds;
 
-    if (_pomodoroState.isLife && _pomodoroState.isPomodoro) {
-      newTarget = _shortBreakDurationMinutes * 60;
-      _currentBreakTargetSeconds = newTarget;
-      if (_pomodoroState.status == TimerStatus.running ||
-          _pomodoroState.status == TimerStatus.overtime) {
-        if (_pomodoroState.elapsedSeconds >= newTarget) {
-          newStatus = TimerStatus.overtime;
-          newOvertime = _pomodoroState.elapsedSeconds - newTarget;
-        } else {
-          newStatus = TimerStatus.running;
-          newOvertime = 0;
+      if (_pomodoroState.isLife && _pomodoroState.isPomodoro) {
+        newTarget = _shortBreakDurationMinutes * 60;
+        _currentBreakTargetSeconds = newTarget;
+        if (_pomodoroState.status == TimerStatus.running ||
+            _pomodoroState.status == TimerStatus.overtime) {
+          if (_pomodoroState.elapsedSeconds >= newTarget) {
+            newStatus = TimerStatus.overtime;
+            newOvertime = _pomodoroState.elapsedSeconds - newTarget;
+          } else {
+            newStatus = TimerStatus.running;
+            newOvertime = 0;
+          }
         }
+      } else {
+        _currentBreakTargetSeconds = 0;
       }
-    } else {
-      _currentBreakTargetSeconds = 0;
-    }
 
-    _pomodoroState = _pomodoroState.copyWith(
-      cycleWorkSeconds: 0,
-      earnedShortBreakSeconds: 0,
-      breakDebtSeconds: 0,
-      isInLongBreak: false,
-      targetSeconds: newTarget,
-      status: newStatus,
-      overtimeSeconds: newOvertime,
-    );
+      _pomodoroState = _pomodoroState.copyWith(
+        cycleWorkSeconds: 0,
+        earnedShortBreakSeconds: 0,
+        breakDebtSeconds: 0,
+        isInLongBreak: false,
+        targetSeconds: newTarget,
+        status: newStatus,
+        overtimeSeconds: newOvertime,
+      );
 
-    await _persistFlowmodoroState();
-    notifyListeners();
+      await _persistFlowmodoroState();
+      notifyListeners();
+    });
   }
 
   // ==================== موتور زمان‌سنج بر پایه Timestamp-Delta ====================
@@ -995,6 +1218,26 @@ class AppStateProvider extends ChangeNotifier {
     List<String>? tagIds,
     ClockType? clockType,
     DateTime? atTime,
+  }) {
+    return _synchronized(() => _switchRealmUnlocked(
+          targetRealm,
+          outcome: outcome,
+          title: title,
+          projectId: projectId,
+          tagIds: tagIds,
+          clockType: clockType,
+          atTime: atTime,
+        ));
+  }
+
+  Future<void> _switchRealmUnlocked(
+    AppRealm targetRealm, {
+    OutcomeItem? outcome,
+    String? title,
+    String? projectId,
+    List<String>? tagIds,
+    ClockType? clockType,
+    DateTime? atTime,
   }) async {
     final now = atTime ?? DateTime.now();
 
@@ -1034,7 +1277,10 @@ class AppStateProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> _closeActiveRecordAndUpdateBank({DateTime? endTime}) async {
+  Future<void> _closeActiveRecordAndUpdateBank({
+    DateTime? endTime,
+    bool preserveOngoingBreakIfWithinLife = false,
+  }) async {
     final current = _activeRecord;
     if (current == null) return;
 
@@ -1058,14 +1304,23 @@ class AppStateProvider extends ChangeNotifier {
 
     await DatabaseService.instance.updateTimeRecord(closed);
 
-    if (closed.isWork) {
-      _applyWorkSliceToBank(finalSeconds);
-    } else {
-      _applyLifeSliceToBank(
-        finalSeconds,
-        project: getProjectById(closed.projectId),
-        resetTime: now,
-      );
+    final int bankSeconds = _effectiveBankDurationForSlice(
+      startTime: closed.startTime,
+      endTime: now,
+      recordedDurationSeconds: finalSeconds,
+    );
+
+    if (bankSeconds > 0) {
+      if (closed.isWork) {
+        _applyWorkSliceToBank(bankSeconds);
+      } else {
+        _applyLifeSliceToBank(
+          bankSeconds,
+          project: getProjectById(closed.projectId),
+          resetTime: now,
+          preserveOngoingBreakIfWithinLife: preserveOngoingBreakIfWithinLife,
+        );
+      }
     }
 
     _activeRecord = null;
@@ -1233,12 +1488,16 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   /// تغییر آنی ماهیت رکورد در حال اجرا (بدون بستن رکورد، از همان ثانیه شروع - چالش ۲)
-  Future<void> swapCurrentSliceRealm({DateTime? atTime}) async {
+  Future<void> swapCurrentSliceRealm({DateTime? atTime}) {
+    return _synchronized(() => _swapCurrentSliceRealmUnlocked(atTime: atTime));
+  }
+
+  Future<void> _swapCurrentSliceRealmUnlocked({DateTime? atTime}) async {
     final current = _activeRecord;
     if (current == null) {
       final target =
           _pomodoroState.isWork ? AppRealm.life : AppRealm.work;
-      await switchRealm(target, atTime: atTime);
+      await _switchRealmUnlocked(target, atTime: atTime);
       return;
     }
 
@@ -1325,105 +1584,109 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   /// تغییر یک‌کلیکی قلمرو کار <-> زندگی روی هر رکورد ثبت‌شده (چالش ۲)
-  Future<void> swapSavedRecordRealm(String recordId) async {
-    if (_activeRecord?.id == recordId) {
-      await swapCurrentSliceRealm();
-      return;
-    }
-
-    final rec = await DatabaseService.instance.getTimeRecordById(recordId);
-    if (rec == null) return;
-
-    final AppRealm newRealm = rec.isWork ? AppRealm.life : AppRealm.work;
-    String? newProjectId = rec.projectId;
-    if (newProjectId != null) {
-      final p = getProjectById(newProjectId);
-      if (p != null && p.realm != newRealm) {
-        newProjectId = null;
+  Future<void> swapSavedRecordRealm(String recordId) {
+    return _synchronized(() async {
+      if (_activeRecord?.id == recordId) {
+        await _swapCurrentSliceRealmUnlocked();
+        return;
       }
-    }
 
-    String newTitle = rec.titleSnapshot;
-    bool newIsUntitled = rec.isUntitledDraft;
-    if (newRealm == AppRealm.work && _genericLifeTitles.contains(newTitle)) {
-      newTitle = AppDefaults.untitledTaskTitle;
-      newIsUntitled = true;
-    }
+      final rec = await DatabaseService.instance.getTimeRecordById(recordId);
+      if (rec == null) return;
 
-    final int newEarned = newRealm == AppRealm.work
-        ? (rec.durationSeconds ~/ _breakRatio)
-        : 0;
+      final AppRealm newRealm = rec.isWork ? AppRealm.life : AppRealm.work;
+      String? newProjectId = rec.projectId;
+      if (newProjectId != null) {
+        final p = getProjectById(newProjectId);
+        if (p != null && p.realm != newRealm) {
+          newProjectId = null;
+        }
+      }
 
-    final updated = rec.copyWith(
-      realm: newRealm,
-      clearOutcomeId: true,
-      projectId: newProjectId,
-      clearProjectId: newProjectId == null,
-      titleSnapshot: newTitle,
-      isUntitledDraft: newIsUntitled,
-      earnedBreakSeconds: newEarned,
-      syncStatus: 'pending',
-    );
+      String newTitle = rec.titleSnapshot;
+      bool newIsUntitled = rec.isUntitledDraft;
+      if (newRealm == AppRealm.work && _genericLifeTitles.contains(newTitle)) {
+        newTitle = AppDefaults.untitledTaskTitle;
+        newIsUntitled = true;
+      }
 
-    await DatabaseService.instance
-        .updateTimeRecord(updated, cascadeNotes: true);
+      final int newEarned = newRealm == AppRealm.work
+          ? (rec.durationSeconds ~/ _breakRatio)
+          : 0;
 
-    await refreshAllData();
-    if (!rec.startTime.isBefore(_lastCycleResetAt)) {
-      await _recalculateCurrentCycleBankFromHistory();
-    }
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-      unawaited(
-          GCalSyncService.instance.syncTimeRecord(updated, projects: _projects));
-    }
+      final updated = rec.copyWith(
+        realm: newRealm,
+        clearOutcomeId: true,
+        projectId: newProjectId,
+        clearProjectId: newProjectId == null,
+        titleSnapshot: newTitle,
+        isUntitledDraft: newIsUntitled,
+        earnedBreakSeconds: newEarned,
+        syncStatus: 'pending',
+      );
+
+      await DatabaseService.instance
+          .updateTimeRecord(updated, cascadeNotes: true);
+
+      await refreshAllData();
+      if ((rec.endTime ?? rec.startTime).isAfter(_lastCycleResetAt)) {
+        await _recalculateCurrentCycleBankFromHistory();
+      }
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        unawaited(
+            GCalSyncService.instance.syncTimeRecord(updated, projects: _projects));
+      }
+    });
   }
 
   /// سوییچ بین پومودورو و کرنومتر در هر دو قلمرو کار و زندگی (چالش ۵)
-  Future<void> toggleClockType() async {
-    final bool willBeStopwatch = !_pomodoroState.isStopwatch;
-    final ClockType newClock =
-        willBeStopwatch ? ClockType.stopwatch : ClockType.pomodoro;
+  Future<void> toggleClockType() {
+    return _synchronized(() async {
+      final bool willBeStopwatch = !_pomodoroState.isStopwatch;
+      final ClockType newClock =
+          willBeStopwatch ? ClockType.stopwatch : ClockType.pomodoro;
 
-    if (willBeStopwatch) {
-      _pomodoroState = _pomodoroState.copyWith(
-        clockType: ClockType.stopwatch,
-        targetSeconds: 0,
-        overtimeSeconds: 0,
-        status: _pomodoroState.status == TimerStatus.idle
+      if (willBeStopwatch) {
+        _pomodoroState = _pomodoroState.copyWith(
+          clockType: ClockType.stopwatch,
+          targetSeconds: 0,
+          overtimeSeconds: 0,
+          status: _pomodoroState.status == TimerStatus.idle
+              ? TimerStatus.idle
+              : TimerStatus.running,
+        );
+      } else {
+        final int target = _pomodoroState.isWork
+            ? (_focusDurationMinutes * 60)
+            : (_currentBreakTargetSeconds > 0
+                ? _currentBreakTargetSeconds
+                : _enterLifeBreakTarget());
+
+        final bool alreadyPast = _pomodoroState.elapsedSeconds >= target;
+        final newStatus = _pomodoroState.status == TimerStatus.idle
             ? TimerStatus.idle
-            : TimerStatus.running,
-      );
-    } else {
-      final int target = _pomodoroState.isWork
-          ? (_focusDurationMinutes * 60)
-          : (_currentBreakTargetSeconds > 0
-              ? _currentBreakTargetSeconds
-              : _enterLifeBreakTarget());
+            : (alreadyPast ? TimerStatus.overtime : TimerStatus.running);
 
-      final bool alreadyPast = _pomodoroState.elapsedSeconds >= target;
-      final newStatus = _pomodoroState.status == TimerStatus.idle
-          ? TimerStatus.idle
-          : (alreadyPast ? TimerStatus.overtime : TimerStatus.running);
+        _pomodoroState = _pomodoroState.copyWith(
+          clockType: ClockType.pomodoro,
+          targetSeconds: target,
+          overtimeSeconds:
+              alreadyPast ? (_pomodoroState.elapsedSeconds - target) : 0,
+          status: newStatus,
+        );
+      }
 
-      _pomodoroState = _pomodoroState.copyWith(
-        clockType: ClockType.pomodoro,
-        targetSeconds: target,
-        overtimeSeconds:
-            alreadyPast ? (_pomodoroState.elapsedSeconds - target) : 0,
-        status: newStatus,
-      );
-    }
+      if (_activeRecord != null) {
+        final updatedRec = _activeRecord!.copyWith(clockMode: newClock);
+        await DatabaseService.instance.updateTimeRecord(updatedRec);
+        _activeRecord = updatedRec;
+      }
 
-    if (_activeRecord != null) {
-      final updatedRec = _activeRecord!.copyWith(clockMode: newClock);
-      await DatabaseService.instance.updateTimeRecord(updatedRec);
-      _activeRecord = updatedRec;
-    }
-
-    await _persistFlowmodoroState();
-    _ensureTickerRunning();
-    notifyListeners();
+      await _persistFlowmodoroState();
+      _ensureTickerRunning();
+      notifyListeners();
+    });
   }
 
   // ==================== شروع و تغییر فعالیت‌ها و اهداف (Outcomes) ====================
@@ -1476,21 +1739,58 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> startOrSwitchToOutcome(
     OutcomeItem outcome, {
     List<String>? tagIds,
+    DateTime? atTime,
+  }) {
+    return _synchronized(() => _startOrSwitchToOutcomeUnlocked(
+          outcome,
+          tagIds: tagIds,
+          atTime: atTime,
+        ));
+  }
+
+  Future<void> _startOrSwitchToOutcomeUnlocked(
+    OutcomeItem outcome, {
+    List<String>? tagIds,
+    DateTime? atTime,
   }) async {
     if (_activeRecord == null ||
         _activeRecord!.realm != outcome.realm ||
         _pomodoroState.status == TimerStatus.idle) {
-      await switchRealm(
+      await _switchRealmUnlocked(
         outcome.realm,
         outcome: outcome,
         tagIds: tagIds,
+        atTime: atTime,
       );
       return;
     }
 
     // اگر در همین قلمرو هستیم: رکورد قبلی را ببند و رکورد جدید را با حفظ فاز جاری باز کن
-    await _closeActiveRecordAndUpdateBank();
-    final now = DateTime.now();
+    final now = atTime ?? DateTime.now();
+    final bool stayingInLife = outcome.realm == AppRealm.life;
+    final DateTime prevResetAt = _lastCycleResetAt;
+    await _closeActiveRecordAndUpdateBank(
+      endTime: now,
+      preserveOngoingBreakIfWithinLife: stayingInLife,
+    );
+
+    int nextTargetSeconds = _pomodoroState.targetSeconds;
+    TimerStatus nextStatus = _pomodoroState.status;
+    int nextOvertime = _pomodoroState.overtimeSeconds;
+    int nextElapsed = _pomodoroState.elapsedSeconds;
+
+    if (stayingInLife && _pomodoroState.isPomodoro) {
+      if (_lastCycleResetAt != prevResetAt) {
+        nextTargetSeconds = _enterLifeBreakTarget();
+        _phaseStartedAt = now;
+        _accumulatedPhaseSeconds = 0;
+        nextElapsed = 0;
+        nextOvertime = 0;
+        nextStatus = TimerStatus.running;
+      } else if (_pomodoroState.targetSeconds > 0) {
+        _currentBreakTargetSeconds = _pomodoroState.targetSeconds;
+      }
+    }
 
     final newRecord = TimeRecord(
       id: _uuid.v4(),
@@ -1512,6 +1812,10 @@ class AppStateProvider extends ChangeNotifier {
     _isGoldenScheduledTaskActive = false;
 
     _pomodoroState = _pomodoroState.copyWith(
+      status: nextStatus,
+      elapsedSeconds: nextElapsed,
+      targetSeconds: nextTargetSeconds,
+      overtimeSeconds: nextOvertime,
       cycleWorkSeconds: _cycleWorkSeconds,
       earnedShortBreakSeconds: _earnedShortBreakSeconds,
       breakDebtSeconds: _breakDebtSeconds,
@@ -1530,6 +1834,24 @@ class AppStateProvider extends ChangeNotifier {
 
   /// ساخت کار/هدف (OutcomeItem) جدید و شروع تایمر روی آن (یا اتصال به رکورد جاری)
   Future<OutcomeItem> createAndStartOutcome({
+    required AppRealm realm,
+    required String title,
+    String? projectId,
+    String description = '',
+    List<String>? tagIds,
+    bool attachToCurrentRecordIfUntitled = false,
+  }) {
+    return _synchronized(() => _createAndStartOutcomeUnlocked(
+          realm: realm,
+          title: title,
+          projectId: projectId,
+          description: description,
+          tagIds: tagIds,
+          attachToCurrentRecordIfUntitled: attachToCurrentRecordIfUntitled,
+        ));
+  }
+
+  Future<OutcomeItem> _createAndStartOutcomeUnlocked({
     required AppRealm realm,
     required String title,
     String? projectId,
@@ -1556,7 +1878,7 @@ class AppStateProvider extends ChangeNotifier {
         _activeRecord != null &&
         _activeRecord!.realm == realm &&
         _activeRecord!.isUntitledDraft) {
-      await updateActiveRecordMetadata(
+      await _updateActiveRecordMetadataUnlocked(
         title: newOutcome.title,
         outcomeId: newOutcome.id,
         projectId: newOutcome.projectId,
@@ -1564,13 +1886,33 @@ class AppStateProvider extends ChangeNotifier {
         tagIds: tagIds ?? _activeRecord!.tagIds,
       );
     } else {
-      await startOrSwitchToOutcome(newOutcome, tagIds: tagIds);
+      await _startOrSwitchToOutcomeUnlocked(newOutcome, tagIds: tagIds);
     }
 
     return newOutcome;
   }
 
   Future<void> updateActiveRecordMetadata({
+    required String title,
+    String? projectId,
+    bool clearProjectId = false,
+    String? outcomeId,
+    bool clearOutcomeId = false,
+    required List<String> tagIds,
+    bool createOutcomeIfMissing = true,
+  }) {
+    return _synchronized(() => _updateActiveRecordMetadataUnlocked(
+          title: title,
+          projectId: projectId,
+          clearProjectId: clearProjectId,
+          outcomeId: outcomeId,
+          clearOutcomeId: clearOutcomeId,
+          tagIds: tagIds,
+          createOutcomeIfMissing: createOutcomeIfMissing,
+        ));
+  }
+
+  Future<void> _updateActiveRecordMetadataUnlocked({
     required String title,
     String? projectId,
     bool clearProjectId = false,
@@ -1644,85 +1986,118 @@ class AppStateProvider extends ChangeNotifier {
     String? projectId,
     OutcomeItem? outcome,
     required List<String> tagIds,
-  }) async {
-    if (outcome != null) {
-      await startOrSwitchToOutcome(outcome, tagIds: tagIds);
-      return;
-    }
+  }) {
+    return _synchronized(() async {
+      if (outcome != null) {
+        await _startOrSwitchToOutcomeUnlocked(outcome, tagIds: tagIds);
+        return;
+      }
 
-    final cleanTitle = newTitle.trim();
-    if (cleanTitle.isNotEmpty && cleanTitle != AppDefaults.untitledTaskTitle) {
-      await createAndStartOutcome(
-        realm: _pomodoroState.realm,
-        title: cleanTitle,
-        projectId: projectId,
-        tagIds: tagIds,
+      final cleanTitle = newTitle.trim();
+      if (cleanTitle.isNotEmpty && cleanTitle != AppDefaults.untitledTaskTitle) {
+        await _createAndStartOutcomeUnlocked(
+          realm: _pomodoroState.realm,
+          title: cleanTitle,
+          projectId: projectId,
+          tagIds: tagIds,
+        );
+        return;
+      }
+
+      // سوییچ به یک رکورد بدون عنوان جدید در همین قلمرو
+      final now = DateTime.now();
+      final bool stayingInLife = _pomodoroState.isLife;
+      final DateTime prevResetAt = _lastCycleResetAt;
+      await _closeActiveRecordAndUpdateBank(
+        endTime: now,
+        preserveOngoingBreakIfWithinLife: stayingInLife,
       );
-      return;
-    }
 
-    // سوییچ به یک رکورد بدون عنوان جدید در همین قلمرو
-    await _closeActiveRecordAndUpdateBank();
-    final now = DateTime.now();
-    final nextRec = TimeRecord(
-      id: _uuid.v4(),
-      realm: _pomodoroState.realm,
-      clockMode: _pomodoroState.clockType,
-      projectId: projectId,
-      titleSnapshot: AppDefaults.untitledTaskTitle,
-      isUntitledDraft: true,
-      tagIds: tagIds,
-      startTime: now,
-    );
+      int nextTargetSeconds = _pomodoroState.targetSeconds;
+      TimerStatus nextStatus = _pomodoroState.status;
+      int nextOvertime = _pomodoroState.overtimeSeconds;
+      int nextElapsed = _pomodoroState.elapsedSeconds;
 
-    await DatabaseService.instance.insertTimeRecord(nextRec);
-    _activeRecord = nextRec;
-    _recordSliceStartedAt = now;
-    _accumulatedRecordSeconds = 0;
-    _activeRecordElapsedSeconds = 0;
-    _isGoldenScheduledTaskActive = false;
+      if (stayingInLife && _pomodoroState.isPomodoro) {
+        if (_lastCycleResetAt != prevResetAt) {
+          nextTargetSeconds = _enterLifeBreakTarget();
+          _phaseStartedAt = now;
+          _accumulatedPhaseSeconds = 0;
+          nextElapsed = 0;
+          nextOvertime = 0;
+          nextStatus = TimerStatus.running;
+        } else if (_pomodoroState.targetSeconds > 0) {
+          _currentBreakTargetSeconds = _pomodoroState.targetSeconds;
+        }
+      }
 
-    _pomodoroState = _pomodoroState.copyWith(
-      cycleWorkSeconds: _cycleWorkSeconds,
-      earnedShortBreakSeconds: _earnedShortBreakSeconds,
-      breakDebtSeconds: _breakDebtSeconds,
-      activeRecordId: nextRec.id,
-      clearActiveOutcome: true,
-    );
+      final nextRec = TimeRecord(
+        id: _uuid.v4(),
+        realm: _pomodoroState.realm,
+        clockMode: _pomodoroState.clockType,
+        projectId: projectId,
+        titleSnapshot: AppDefaults.untitledTaskTitle,
+        isUntitledDraft: true,
+        tagIds: tagIds,
+        startTime: now,
+      );
 
-    await _persistFlowmodoroState();
-    _ensureTickerRunning();
-    await refreshAllData();
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-    }
+      await DatabaseService.instance.insertTimeRecord(nextRec);
+      _activeRecord = nextRec;
+      _recordSliceStartedAt = now;
+      _accumulatedRecordSeconds = 0;
+      _activeRecordElapsedSeconds = 0;
+      _isGoldenScheduledTaskActive = false;
+
+      _pomodoroState = _pomodoroState.copyWith(
+        status: nextStatus,
+        elapsedSeconds: nextElapsed,
+        targetSeconds: nextTargetSeconds,
+        overtimeSeconds: nextOvertime,
+        cycleWorkSeconds: _cycleWorkSeconds,
+        earnedShortBreakSeconds: _earnedShortBreakSeconds,
+        breakDebtSeconds: _breakDebtSeconds,
+        isInLongBreak: _isInLongBreak,
+        activeRecordId: nextRec.id,
+        clearActiveOutcome: true,
+      );
+
+      await _persistFlowmodoroState();
+      _ensureTickerRunning();
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+      }
+    });
   }
 
-  Future<void> stopAndResetSession() async {
-    _ticker?.cancel();
-    await _closeActiveRecordAndUpdateBank();
-    _phaseStartedAt = null;
-    _accumulatedPhaseSeconds = 0;
-    _lastErgonomicNudgeMessage = null;
+  Future<void> stopAndResetSession() {
+    return _synchronized(() async {
+      _ticker?.cancel();
+      await _closeActiveRecordAndUpdateBank();
+      _phaseStartedAt = null;
+      _accumulatedPhaseSeconds = 0;
+      _lastErgonomicNudgeMessage = null;
 
-    _pomodoroState = PomodoroState(
-      realm: _pomodoroState.realm,
-      clockType: _pomodoroState.clockType,
-      status: TimerStatus.idle,
-      elapsedSeconds: 0,
-      targetSeconds: _pomodoroState.isStopwatch
-          ? 0
-          : (_focusDurationMinutes * 60),
-      cycleWorkSeconds: _cycleWorkSeconds,
-      earnedShortBreakSeconds: _earnedShortBreakSeconds,
-      breakDebtSeconds: _breakDebtSeconds,
-      cycleWorkTargetSeconds: _cycleWorkTargetMinutes * 60,
-      isInLongBreak: _isInLongBreak,
-      windowPosture: _pomodoroState.windowPosture,
-    );
+      _pomodoroState = PomodoroState(
+        realm: _pomodoroState.realm,
+        clockType: _pomodoroState.clockType,
+        status: TimerStatus.idle,
+        elapsedSeconds: 0,
+        targetSeconds: _pomodoroState.isStopwatch
+            ? 0
+            : (_focusDurationMinutes * 60),
+        cycleWorkSeconds: _cycleWorkSeconds,
+        earnedShortBreakSeconds: _earnedShortBreakSeconds,
+        breakDebtSeconds: _breakDebtSeconds,
+        cycleWorkTargetSeconds: _cycleWorkTargetMinutes * 60,
+        isInLongBreak: _isInLongBreak,
+        windowPosture: _pomodoroState.windowPosture,
+      );
 
-    await _persistFlowmodoroState();
-    await refreshAllData();
+      await _persistFlowmodoroState();
+      await refreshAllData();
+    });
   }
 
   // ==================== مدیریت کارها / اهداف (Outcomes CRUD) ====================
@@ -1830,54 +2205,57 @@ class AppStateProvider extends ChangeNotifier {
     String? projectId,
     AppRealm? newRealm,
     required List<String> tagIds,
-  }) async {
-    final existing = await DatabaseService.instance.getTimeRecordById(id);
-    if (existing == null) return;
+  }) {
+    return _synchronized(() async {
+      final existing = await DatabaseService.instance.getTimeRecordById(id);
+      if (existing == null) return;
 
-    final AppRealm effectiveRealm = newRealm ?? existing.realm;
-    String? targetOutcomeId = existingOutcomeId;
-    String? targetProjectId = projectId;
+      final AppRealm effectiveRealm = newRealm ?? existing.realm;
+      String? targetOutcomeId = existingOutcomeId;
+      String? targetProjectId = projectId;
 
-    if (targetOutcomeId == null &&
-        title.trim().isNotEmpty &&
-        title.trim() != AppDefaults.untitledTaskTitle) {
-      final createdOutcome = OutcomeItem(
-        id: _uuid.v4(),
-        realm: effectiveRealm,
-        projectId: projectId,
-        title: title.trim(),
-        isCompleted: false,
+      if (targetOutcomeId == null &&
+          title.trim().isNotEmpty &&
+          title.trim() != AppDefaults.untitledTaskTitle) {
+        final createdOutcome = OutcomeItem(
+          id: _uuid.v4(),
+          realm: effectiveRealm,
+          projectId: projectId,
+          title: title.trim(),
+          isCompleted: false,
+        );
+        await DatabaseService.instance.insertOutcome(createdOutcome);
+        targetOutcomeId = createdOutcome.id;
+        targetProjectId = createdOutcome.projectId;
+      }
+
+      final updated = await DatabaseService.instance.updateTimeRecordWithAudit(
+        id: id,
+        newTitle: title,
+        newRealm: effectiveRealm,
+        newOutcomeId: targetOutcomeId,
+        clearOutcomeId: targetOutcomeId == null,
+        newProjectId: targetProjectId,
+        clearProjectId: targetProjectId == null,
+        newTagIds: tagIds,
+        newStartTime: existing.startTime,
+        newEndTime: existing.endTime ??
+            existing.startTime.add(Duration(seconds: existing.durationSeconds)),
+        newDurationSeconds: existing.durationSeconds,
+        breakRatio: _breakRatio,
       );
-      await DatabaseService.instance.insertOutcome(createdOutcome);
-      targetOutcomeId = createdOutcome.id;
-      targetProjectId = createdOutcome.projectId;
-    }
 
-    final updated = await DatabaseService.instance.updateTimeRecordWithAudit(
-      id: id,
-      newTitle: title,
-      newRealm: effectiveRealm,
-      newOutcomeId: targetOutcomeId,
-      clearOutcomeId: targetOutcomeId == null,
-      newProjectId: targetProjectId,
-      clearProjectId: targetProjectId == null,
-      newTagIds: tagIds,
-      newStartTime: existing.startTime,
-      newEndTime: existing.endTime ??
-          existing.startTime.add(Duration(seconds: existing.durationSeconds)),
-      newDurationSeconds: existing.durationSeconds,
-    );
-
-    await refreshAllData();
-    if (existing.realm != effectiveRealm &&
-        !existing.startTime.isBefore(_lastCycleResetAt)) {
-      await _recalculateCurrentCycleBankFromHistory();
-    }
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-      unawaited(
-          GCalSyncService.instance.syncTimeRecord(updated, projects: _projects));
-    }
+      await refreshAllData();
+      if (existing.realm != effectiveRealm &&
+          (updated.endTime ?? updated.startTime).isAfter(_lastCycleResetAt)) {
+        await _recalculateCurrentCycleBankFromHistory();
+      }
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        unawaited(GCalSyncService.instance
+            .syncTimeRecord(updated, projects: _projects));
+      }
+    });
   }
 
   Future<void> updateTimeRecordTimes({
@@ -1924,54 +2302,64 @@ class AppStateProvider extends ChangeNotifier {
     required DateTime newEndTime,
     required int newDurationSeconds,
     String? editNote,
-  }) async {
-    final updated = await DatabaseService.instance.updateTimeRecordWithAudit(
-      id: id,
-      newTitle: newTitle,
-      newRealm: newRealm,
-      newOutcomeId: newOutcomeId,
-      clearOutcomeId: clearOutcomeId,
-      newProjectId: newProjectId,
-      clearProjectId: clearProjectId,
-      newTagIds: newTagIds,
-      newStartTime: newStartTime,
-      newEndTime: newEndTime,
-      newDurationSeconds: newDurationSeconds,
-      editNote: editNote,
-    );
+  }) {
+    return _synchronized(() async {
+      final beforeEdit = await DatabaseService.instance.getTimeRecordById(id);
+      final updated = await DatabaseService.instance.updateTimeRecordWithAudit(
+        id: id,
+        newTitle: newTitle,
+        newRealm: newRealm,
+        newOutcomeId: newOutcomeId,
+        clearOutcomeId: clearOutcomeId,
+        newProjectId: newProjectId,
+        clearProjectId: clearProjectId,
+        newTagIds: newTagIds,
+        newStartTime: newStartTime,
+        newEndTime: newEndTime,
+        newDurationSeconds: newDurationSeconds,
+        editNote: editNote,
+        breakRatio: _breakRatio,
+      );
 
-    await refreshAllData();
-    if (!newStartTime.isBefore(_lastCycleResetAt)) {
-      await _recalculateCurrentCycleBankFromHistory();
-    }
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-      unawaited(
-          GCalSyncService.instance.syncTimeRecord(updated, projects: _projects));
-    }
+      await refreshAllData();
+      final bool wasInCycle = beforeEdit != null &&
+          (beforeEdit.endTime ?? beforeEdit.startTime)
+              .isAfter(_lastCycleResetAt);
+      if (wasInCycle || newEndTime.isAfter(_lastCycleResetAt)) {
+        await _recalculateCurrentCycleBankFromHistory();
+      }
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        unawaited(GCalSyncService.instance
+            .syncTimeRecord(updated, projects: _projects));
+      }
+    });
   }
 
-  Future<void> deleteTimeRecord(String id) async {
-    final existing = await DatabaseService.instance.getTimeRecordById(id);
-    await DatabaseService.instance.deleteTimeRecord(id);
-    if (_activeRecord?.id == id) {
-      _activeRecord = null;
-      _ticker?.cancel();
-      _pomodoroState = _pomodoroState.copyWith(
-        status: TimerStatus.idle,
-        elapsedSeconds: 0,
-        overtimeSeconds: 0,
-        clearActiveRecord: true,
-        clearActiveOutcome: true,
-      );
-    }
-    await refreshAllData();
-    if (existing != null && !existing.startTime.isBefore(_lastCycleResetAt)) {
-      await _recalculateCurrentCycleBankFromHistory();
-    }
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-    }
+  Future<void> deleteTimeRecord(String id) {
+    return _synchronized(() async {
+      final existing = await DatabaseService.instance.getTimeRecordById(id);
+      await DatabaseService.instance.deleteTimeRecord(id);
+      if (_activeRecord?.id == id) {
+        _activeRecord = null;
+        _ticker?.cancel();
+        _pomodoroState = _pomodoroState.copyWith(
+          status: TimerStatus.idle,
+          elapsedSeconds: 0,
+          overtimeSeconds: 0,
+          clearActiveRecord: true,
+          clearActiveOutcome: true,
+        );
+      }
+      await refreshAllData();
+      if (existing != null &&
+          (existing.endTime ?? existing.startTime).isAfter(_lastCycleResetAt)) {
+        await _recalculateCurrentCycleBankFromHistory();
+      }
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+      }
+    });
   }
 
   Future<void> createManualTimeRecord({
@@ -1983,50 +2371,53 @@ class AppStateProvider extends ChangeNotifier {
     required DateTime startTime,
     required DateTime endTime,
     List<String>? tagIds,
-  }) async {
-    final now = DateTime.now();
-    final int durationSeconds =
-        math.max(1, endTime.difference(startTime).inSeconds);
-    final tags = (tagIds ?? []).toList();
-    if (!tags.contains('دستی') && !tags.contains('manual')) {
-      tags.add('دستی');
-    }
-
-    String? resolvedProjectId = projectId;
-    if (outcomeId != null) {
-      final outcome = await DatabaseService.instance.getOutcomeById(outcomeId);
-      if (outcome != null && outcome.projectId != null) {
-        resolvedProjectId = outcome.projectId;
+  }) {
+    return _synchronized(() async {
+      final now = DateTime.now();
+      final int durationSeconds =
+          math.max(1, endTime.difference(startTime).inSeconds);
+      final tags = (tagIds ?? []).toList();
+      if (!tags.contains('دستی') && !tags.contains('manual')) {
+        tags.add('دستی');
       }
-    }
 
-    final record = TimeRecord(
-      id: _uuid.v4(),
-      realm: realm,
-      clockMode: clockMode,
-      outcomeId: outcomeId,
-      projectId: resolvedProjectId,
-      titleSnapshot: title.trim().isEmpty ? 'گزارش دستی' : title.trim(),
-      isUntitledDraft: false,
-      tagIds: tags,
-      startTime: startTime,
-      endTime: endTime,
-      durationSeconds: durationSeconds,
-      earnedBreakSeconds:
-          realm == AppRealm.work ? (durationSeconds ~/ _breakRatio) : 0,
-      isEdited: true,
-      editedAt: now,
-      editNote: 'ثبت دستی از تقویم',
-    );
+      String? resolvedProjectId = projectId;
+      if (outcomeId != null) {
+        final outcome =
+            await DatabaseService.instance.getOutcomeById(outcomeId);
+        if (outcome != null && outcome.projectId != null) {
+          resolvedProjectId = outcome.projectId;
+        }
+      }
 
-    await DatabaseService.instance.insertTimeRecord(record);
-    await refreshAllData();
-    if (!startTime.isBefore(_lastCycleResetAt)) {
-      await _recalculateCurrentCycleBankFromHistory();
-    }
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-    }
+      final record = TimeRecord(
+        id: _uuid.v4(),
+        realm: realm,
+        clockMode: clockMode,
+        outcomeId: outcomeId,
+        projectId: resolvedProjectId,
+        titleSnapshot: title.trim().isEmpty ? 'گزارش دستی' : title.trim(),
+        isUntitledDraft: false,
+        tagIds: tags,
+        startTime: startTime,
+        endTime: endTime,
+        durationSeconds: durationSeconds,
+        earnedBreakSeconds:
+            realm == AppRealm.work ? (durationSeconds ~/ _breakRatio) : 0,
+        isEdited: true,
+        editedAt: now,
+        editNote: 'ثبت دستی از تقویم',
+      );
+
+      await DatabaseService.instance.insertTimeRecord(record);
+      await refreshAllData();
+      if (endTime.isAfter(_lastCycleResetAt)) {
+        await _recalculateCurrentCycleBankFromHistory();
+      }
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+      }
+    });
   }
 
   // ==================== پروژه‌ها، تگ‌ها و تقویم ====================

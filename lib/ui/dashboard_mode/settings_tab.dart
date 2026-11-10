@@ -190,11 +190,10 @@ class _SettingsTabState extends State<SettingsTab> {
                             : AppColors.textSecondary,
                       ),
                       _BankStatChip(
-                        label: 'حالت استراحت بعدی',
-                        value: state.cycleWorkSeconds >=
-                                state.cycleWorkTargetSeconds
-                            ? 'استراحت طولانی (${provider.longBreakDurationMinutes}m پایه)'
-                            : 'استراحت کوتاه (حداقل ${provider.shortBreakDurationMinutes}m)',
+                        label: state.isLife
+                            ? 'وضعیت و فرمول استراحت فعلی'
+                            : 'وضعیت و فرمول استراحت بعدی',
+                        value: provider.breakTargetExplanationFa,
                         color: AppColors.golden,
                       ),
                     ],

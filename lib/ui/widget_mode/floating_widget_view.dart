@@ -334,8 +334,8 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
 
         final buttonRealmAction = _HaloButton(
           tooltip: state.isWork
-              ? 'ورود به قلمرو زندگی (استراحت متناسب)'
-              : 'بازگشت به قلمرو کار',
+              ? 'ورود به قلمرو زندگی\n${provider.breakTargetExplanationFa}'
+              : 'بازگشت به قلمرو کار\n${provider.breakTargetExplanationFa}',
           icon: state.isWork ? Icons.coffee_rounded : Icons.work_rounded,
           iconColor: Colors.white,
           backgroundColor: state.isWork
@@ -365,12 +365,16 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
         final taskCapsule = MouseRegion(
           onEnter: (_) => _onMouseEnter(),
           onExit: (_) => _onMouseExit(),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(14),
-            onTap: () {
-              provider.toggleQuickMenuExpanded(!provider.isQuickMenuExpanded);
-            },
-            child: Container(
+          child: Tooltip(
+            message: state.isLife
+                ? provider.breakTargetExplanationFa
+                : '$capsuleText\n${provider.breakTargetExplanationFa}',
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () {
+                provider.toggleQuickMenuExpanded(!provider.isQuickMenuExpanded);
+              },
+              child: Container(
               constraints: const BoxConstraints(maxWidth: 175),
               padding:
                   const EdgeInsets.symmetric(horizontal: 11, vertical: 4.5),
@@ -432,6 +436,7 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                 ],
               ),
             ),
+          ),
           ),
         );
 

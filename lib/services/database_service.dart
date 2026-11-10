@@ -930,6 +930,7 @@ class DatabaseService {
     required DateTime newEndTime,
     required int newDurationSeconds,
     String? editNote,
+    int breakRatio = AppDurations.defaultBreakRatio,
   }) async {
     final oldRecord = await getTimeRecordById(id);
     if (oldRecord == null) {
@@ -977,9 +978,9 @@ class DatabaseService {
         : newTitle.trim();
     final bool isStillUntitled = cleanTitle == AppDefaults.untitledTaskTitle;
     final AppRealm finalRealm = newRealm ?? oldRecord.realm;
-    final int newEarnedBreak = finalRealm == AppRealm.work
-        ? (newDurationSeconds ~/ AppDurations.defaultBreakRatio)
-        : 0;
+    final int safeRatio = breakRatio < 1 ? AppDurations.defaultBreakRatio : breakRatio;
+    final int newEarnedBreak =
+        finalRealm == AppRealm.work ? (newDurationSeconds ~/ safeRatio) : 0;
 
     final updated = oldRecord.copyWith(
       realm: finalRealm,

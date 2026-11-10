@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants.dart';
+import '../../core/date_time_utils.dart';
 import '../../models/outcome_item.dart';
 import '../../models/pomodoro_state.dart';
 import '../../providers/app_state_provider.dart';
@@ -89,8 +90,6 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
 
         final int cycleMin = state.cycleWorkSeconds ~/ 60;
         final int targetMin = state.cycleWorkTargetSeconds ~/ 60;
-        final int earnedMin = state.earnedShortBreakSeconds ~/ 60;
-        final int debtMin = state.breakDebtSeconds ~/ 60;
 
         return Container(
           padding: const EdgeInsets.all(11),
@@ -198,27 +197,33 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
                         ],
                       ),
                       const SizedBox(height: 5),
-                      Row(
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 2,
                         children: [
                           Text(
                             'چرخه: $cycleMin/$targetMinد',
                             style: GoogleFonts.jetBrainsMono(
                                 fontSize: 9.5, color: AppColors.textSecondary),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'استراحت ذخیره: +$earnedMinد',
-                            style: GoogleFonts.jetBrainsMono(
-                                fontSize: 9.5, color: AppColors.lifeGreen),
-                          ),
-                          if (debtMin > 0) ...[
-                            const SizedBox(width: 8),
+                          if (state.isLife && state.isInLongBreak)
                             Text(
-                              'بدهی: -$debtMinد',
+                              'استراحت طولانی: ${DateTimeUtils.formatDurationHms(provider.activeOrPreviewBreakTargetSeconds)}',
+                              style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 9.5, color: AppColors.golden),
+                            )
+                          else
+                            Text(
+                              'ذخیره کوتاه: ${DateTimeUtils.formatDurationHms(state.earnedShortBreakSeconds)}',
+                              style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 9.5, color: AppColors.lifeGreen),
+                            ),
+                          if (state.breakDebtSeconds > 0)
+                            Text(
+                              'بدهی: -${DateTimeUtils.formatDurationHms(state.breakDebtSeconds)}',
                               style: GoogleFonts.jetBrainsMono(
                                   fontSize: 9.5, color: AppColors.overtime),
                             ),
-                          ],
                         ],
                       ),
                       const SizedBox(height: 4),
@@ -229,6 +234,16 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
                           minHeight: 3.5,
                           backgroundColor: Colors.white10,
                           valueColor: AlwaysStoppedAnimation<Color>(realmColor),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        provider.breakTargetExplanationFa,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 9.5,
+                          color: AppColors.textSecondary,
                         ),
                       ),
                     ],
