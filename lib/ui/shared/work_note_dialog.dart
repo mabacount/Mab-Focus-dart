@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'dart:io';
-import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +17,7 @@ import '../../core/platform_helper.dart';
 import '../../models/pomodoro_state.dart';
 import '../../models/session_note.dart';
 import '../../providers/app_state_provider.dart';
+import 'work_note_window_coordinator.dart';
 
 class WorkNoteDialog extends StatefulWidget {
   final bool asBottomSheet;
@@ -29,32 +28,28 @@ class WorkNoteDialog extends StatefulWidget {
     final provider = context.read<AppStateProvider>();
     final active = provider.activeRecord;
     final outcome = provider.activeOutcome;
-    final project = provider.getProjectById(active?.projectId);
+    final effectiveProjectId = active?.projectId ?? outcome?.projectId;
+    final project = provider.getProjectById(effectiveProjectId);
 
     if (PlatformHelper.isDesktop) {
-      try {
-        final window = await WindowController.create(
-          WindowConfiguration(
-            hiddenAtLaunch: true,
-            arguments: jsonEncode({
-              'type': 'work_note',
-              'realm': (active?.realm ?? provider.pomodoroState.realm).dbValue,
-              'timeRecordId': active?.id,
-              'outcomeId': active?.outcomeId,
-              'projectId': active?.projectId,
-              'taskTitle': outcome?.title ??
-                  (active?.titleSnapshot.isNotEmpty == true
-                      ? active!.titleSnapshot
-                      : AppDefaults.untitledTaskTitle),
-              'projectName': project?.name,
-              'projectColorHex': project?.colorHex,
-            }),
-          ),
-        );
-        await window.show();
+      final payload = <String, dynamic>{
+        'type': 'work_note',
+        'realm': (active?.realm ?? provider.pomodoroState.realm).dbValue,
+        'timeRecordId': active?.id,
+        'outcomeId': active?.outcomeId,
+        'projectId': effectiveProjectId,
+        'taskTitle': outcome?.title ??
+            (active?.titleSnapshot.isNotEmpty == true
+                ? active!.titleSnapshot
+                : AppDefaults.untitledTaskTitle),
+        'projectName': project?.name,
+        'projectColorHex': project?.colorHex,
+      };
+      final opened = await WorkNoteWindowCoordinator.instance.openWorkNote(
+        payload,
+      );
+      if (opened) {
         return;
-      } catch (e) {
-        debugPrint('Failed to open standalone multi-window: $e');
       }
     }
 

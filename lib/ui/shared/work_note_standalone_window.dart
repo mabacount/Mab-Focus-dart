@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -16,6 +18,7 @@ import '../../core/jalali_date.dart';
 import '../../models/pomodoro_state.dart';
 import '../../models/session_note.dart';
 import '../../services/database_service.dart';
+import 'work_note_window_coordinator.dart';
 
 class WorkNoteStandaloneApp extends StatelessWidget {
   final WindowController windowController;
@@ -26,6 +29,7 @@ class WorkNoteStandaloneApp extends StatelessWidget {
   final String taskTitle;
   final String? projectName;
   final String? projectColorHex;
+  final bool startHidden;
 
   const WorkNoteStandaloneApp({
     super.key,
@@ -37,6 +41,7 @@ class WorkNoteStandaloneApp extends StatelessWidget {
     required this.taskTitle,
     this.projectName,
     this.projectColorHex,
+    this.startHidden = false,
   });
 
   @override
@@ -57,8 +62,12 @@ class WorkNoteStandaloneApp extends StatelessWidget {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      theme: ThemeData.dark().copyWith(
+      theme: ThemeData.dark(useMaterial3: true).copyWith(
         scaffoldBackgroundColor: Colors.transparent,
+        canvasColor: Colors.transparent,
+        colorScheme: const ColorScheme.dark(
+          surface: AppColors.surface,
+        ),
         textTheme: baseTextTheme,
       ),
       home: WorkNoteStandaloneView(
@@ -70,6 +79,7 @@ class WorkNoteStandaloneApp extends StatelessWidget {
         taskTitle: taskTitle,
         projectName: projectName,
         projectColorHex: projectColorHex,
+        startHidden: startHidden,
       ),
     );
   }
@@ -84,6 +94,9 @@ class WorkNoteStandaloneView extends StatefulWidget {
   final String taskTitle;
   final String? projectName;
   final String? projectColorHex;
+  final bool startHidden;
+  final bool manageNativeWindow;
+  final bool useGoogleFonts;
 
   const WorkNoteStandaloneView({
     super.key,
@@ -95,47 +108,254 @@ class WorkNoteStandaloneView extends StatefulWidget {
     required this.taskTitle,
     this.projectName,
     this.projectColorHex,
+    this.startHidden = false,
+    this.manageNativeWindow = true,
+    this.useGoogleFonts = true,
   });
 
   @override
-  State<WorkNoteStandaloneView> createState() => _WorkNoteStandaloneViewState();
+  State<WorkNoteStandaloneView> createState() => WorkNoteStandaloneViewState();
 }
 
-class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
+class WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView>
+    with WindowListener {
   final TextEditingController _contentController = TextEditingController();
+  final FocusNode _noteFocusNode = FocusNode();
   final List<String> _attachedImagePaths = [];
   SessionNoteType _noteType = SessionNoteType.report;
   bool _isSaving = false;
 
+  late AppRealm _realm;
+  String? _timeRecordId;
+  String? _outcomeId;
+  String? _projectId;
+  late String _taskTitle;
+  String? _projectName;
+  String? _projectColorHex;
+  late DateTime _openedAt;
+
+  bool _isVisible = false;
+  bool _allowPermanentClose = false;
+  Future<void>? _initFuture;
+
+  @visibleForTesting
+  bool get isVisibleForTest => _isVisible;
+
+  @visibleForTesting
+  String get currentTaskTitleForTest => _taskTitle;
+
+  @visibleForTesting
+  AppRealm get currentRealmForTest => _realm;
+
   @override
   void initState() {
     super.initState();
-    _initSubWindow();
+    _realm = widget.realm;
+    _timeRecordId = widget.timeRecordId;
+    _outcomeId = widget.outcomeId;
+    _projectId = widget.projectId;
+    _taskTitle = widget.taskTitle;
+    _projectName = widget.projectName;
+    _projectColorHex = widget.projectColorHex;
+    _openedAt = DateTime.now();
+
+    if (widget.manageNativeWindow) {
+      windowManager.addListener(this);
+      _initFuture = _initSubWindow();
+    }
+  }
+
+  Future<void> _waitForNextFrame(Duration timeout) async {
+    try {
+      SchedulerBinding.instance.scheduleFrame();
+      await WidgetsBinding.instance.endOfFrame.timeout(timeout);
+    } catch (_) {}
   }
 
   Future<void> _initSubWindow() async {
+    await widget.windowController.setWindowMethodHandler(_handleHostMethodCall);
+
     await windowManager.ensureInitialized();
-    const windowOptions = WindowOptions(
-      size: Size(450, 560),
+    final windowOptions = WindowOptions(
+      size: const Size(450, 560),
       center: true,
       backgroundColor: Colors.transparent,
-      skipTaskbar: false,
-      titleBarStyle: TitleBarStyle.hidden,
-      windowButtonVisibility: false,
+      skipTaskbar: widget.startHidden,
     );
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.setPreventClose(true);
       await windowManager.setAsFrameless();
-      await windowManager.setBackgroundColor(Colors.transparent);
-      await windowManager.setHasShadow(false);
-      await windowManager.setAlwaysOnTop(true);
       await windowManager.setResizable(false);
-      await windowManager.show();
-      await windowManager.focus();
+      await windowManager.setHasShadow(false);
+      await windowManager.setBackgroundColor(Colors.transparent);
+      await windowManager.setAlwaysOnTop(true);
+      await windowManager.setSize(const Size(450, 560));
+      await windowManager.center();
+      await _waitForNextFrame(const Duration(milliseconds: 500));
+
+      if (!widget.startHidden) {
+        _isVisible = true;
+        await widget.windowController.show();
+        await windowManager.focus();
+        await windowManager.setAlwaysOnTop(true);
+        unawaited(windowManager.setSkipTaskbar(false).catchError((_) {}));
+      }
     });
+
+    // پیش‌گرم کردن دیتابیس SQLite در پس‌زمینه برای ثبت بدون تاخیر
+    try {
+      await DatabaseService.instance.database;
+    } catch (_) {}
+
+    try {
+      const syncChannel = WindowMethodChannel(
+        WorkNoteWindowCoordinator.syncChannelName,
+        mode: ChannelMode.unidirectional,
+      );
+      await syncChannel.invokeMethod(
+        WorkNoteWindowCoordinator.methodHostReady,
+        {'windowId': widget.windowController.windowId},
+      );
+    } catch (_) {}
+  }
+
+  Future<dynamic> _handleHostMethodCall(MethodCall call) async {
+    switch (call.method) {
+      case 'ping':
+        return 'pong';
+      case WorkNoteWindowCoordinator.methodOpenNote:
+        final args = call.arguments;
+        if (args is Map) {
+          await applyOpenPayload(args);
+        }
+        return true;
+      case WorkNoteWindowCoordinator.methodShutdown:
+        _allowPermanentClose = true;
+        try {
+          await windowManager.setPreventClose(false);
+        } catch (_) {}
+        try {
+          await windowManager.close();
+        } catch (_) {}
+        return true;
+      default:
+        return null;
+    }
+  }
+
+  /// اعمال کانتکست فعالیت جاری و نمایش فوری پنجره از حالت مخفی (یا آوردن به جلو)
+  Future<void> applyOpenPayload(Map<dynamic, dynamic> args) async {
+    await (_initFuture ?? Future<void>.value());
+    if (!mounted) return;
+
+    final bool wasVisible = _isVisible;
+    setState(() {
+      _realm = AppRealmX.fromDb(args['realm'] as String?);
+      _timeRecordId = args['timeRecordId'] as String?;
+      _outcomeId = args['outcomeId'] as String?;
+      _projectId = args['projectId'] as String?;
+      final incomingTitle = args['taskTitle'] as String?;
+      _taskTitle = (incomingTitle != null && incomingTitle.trim().isNotEmpty)
+          ? incomingTitle
+          : AppDefaults.untitledTaskTitle;
+      _projectName = args['projectName'] as String?;
+      _projectColorHex = args['projectColorHex'] as String?;
+      _openedAt = DateTime.now();
+
+      if (!wasVisible) {
+        _contentController.clear();
+        _attachedImagePaths.clear();
+        _noteType = SessionNoteType.report;
+        _isSaving = false;
+      }
+      _isVisible = true;
+    });
+
+    ScaffoldMessenger.maybeOf(context)?.clearSnackBars();
+
+    if (!widget.manageNativeWindow) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _noteFocusNode.requestFocus();
+      });
+      return;
+    }
+
+    // پیش از نمایش پنجره مخفی، یک فریم با ظاهر و کانتکست جدید رندر شود
+    await _waitForNextFrame(const Duration(milliseconds: 120));
+
+    if (!wasVisible) {
+      await windowManager.center();
+      await widget.windowController.show();
+      await windowManager.focus();
+      await windowManager.setAlwaysOnTop(true);
+      unawaited(windowManager.setSkipTaskbar(false).catchError((_) {}));
+    } else {
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
+      await widget.windowController.show();
+      await windowManager.focus();
+      await windowManager.setAlwaysOnTop(true);
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _noteFocusNode.requestFocus();
+      }
+    });
+  }
+
+  Future<void> hideAndReset() async {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.clearSnackBars();
+
+    if (widget.manageNativeWindow) {
+      try {
+        await windowManager.hide();
+      } catch (_) {
+        try {
+          await widget.windowController.hide();
+        } catch (_) {}
+      }
+      unawaited(windowManager.setSkipTaskbar(true).catchError((_) {}));
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isVisible = false;
+      _isSaving = false;
+      _noteType = SessionNoteType.report;
+      _contentController.clear();
+      _attachedImagePaths.clear();
+    });
+
+    if (widget.manageNativeWindow) {
+      await _waitForNextFrame(const Duration(milliseconds: 120));
+      try {
+        const syncChannel = WindowMethodChannel(
+          WorkNoteWindowCoordinator.syncChannelName,
+          mode: ChannelMode.unidirectional,
+        );
+        await syncChannel.invokeMethod(
+          WorkNoteWindowCoordinator.methodNoteWindowHidden,
+        );
+      } catch (_) {}
+    }
+  }
+
+  @override
+  void onWindowClose() {
+    if (!_allowPermanentClose) {
+      unawaited(hideAndReset());
+    }
   }
 
   @override
   void dispose() {
+    if (widget.manageNativeWindow) {
+      windowManager.removeListener(this);
+    }
+    _noteFocusNode.dispose();
     _contentController.dispose();
     super.dispose();
   }
@@ -212,7 +432,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'تصویری در کلیپ‌بورد یافت نشد. می‌توانید با دکمه انتخاب عکس استفاده کنید.'),
+                'تصویری در کلیپ‌بورد یافت نشد. می‌توانید از دکمه انتخاب عکس استفاده کنید.'),
             duration: Duration(seconds: 2),
           ),
         );
@@ -274,11 +494,11 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
       final now = DateTime.now();
       final note = SessionNote(
         id: const Uuid().v4(),
-        realm: widget.realm,
+        realm: _realm,
         noteType: _noteType,
-        timeRecordId: widget.timeRecordId,
-        outcomeId: widget.outcomeId,
-        projectId: widget.projectId,
+        timeRecordId: _timeRecordId,
+        outcomeId: _outcomeId,
+        projectId: _projectId,
         content: text,
         imagePaths: List.from(_attachedImagePaths),
         createdAt: now,
@@ -287,12 +507,18 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
       await DatabaseService.instance.insertSessionNote(note);
 
       // اطلاع‌رسانی به پنجره اصلی جهت رفرش لیست
-      try {
-        const syncChannel = WindowMethodChannel('work_notes_sync');
-        await syncChannel.invokeMethod('note_added');
-      } catch (_) {}
+      if (widget.manageNativeWindow) {
+        try {
+          const syncChannel = WindowMethodChannel(
+            WorkNoteWindowCoordinator.syncChannelName,
+            mode: ChannelMode.unidirectional,
+          );
+          await syncChannel
+              .invokeMethod(WorkNoteWindowCoordinator.methodNoteAdded);
+        } catch (_) {}
+      }
 
-      await windowManager.close();
+      await hideAndReset();
     } catch (e) {
       if (mounted) {
         setState(() => _isSaving = false);
@@ -306,20 +532,33 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
     }
   }
 
+  Color _parseHexOr(String? hex, Color fallback) {
+    if (hex == null || hex.isEmpty) return fallback;
+    try {
+      return Color(int.parse(hex.replaceFirst('#', '0xFF')));
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final realmColor = widget.realm == AppRealm.life
-        ? AppColors.lifeGreen
-        : AppColors.workBlue;
-    final now = DateTime.now();
+    final realmColor =
+        _realm == AppRealm.life ? AppColors.lifeGreen : AppColors.workBlue;
     final timeStr =
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-    final dateStr = JalaliDate.formatWithWeekDay(now);
+        '${_openedAt.hour.toString().padLeft(2, '0')}:${_openedAt.minute.toString().padLeft(2, '0')}';
+    final dateStr = JalaliDate.formatWithWeekDay(_openedAt);
+    final projectColor = _parseHexOr(_projectColorHex, realmColor);
 
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyV, control: true):
             _pasteFromClipboard,
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (!_isSaving) {
+            unawaited(hideAndReset());
+          }
+        },
       },
       child: Focus(
         autofocus: true,
@@ -348,7 +587,11 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                   children: [
                     GestureDetector(
                       behavior: HitTestBehavior.translucent,
-                      onPanStart: (_) => windowManager.startDragging(),
+                      onPanStart: (_) {
+                        if (widget.manageNativeWindow) {
+                          windowManager.startDragging();
+                        }
+                      },
                       child: MouseRegion(
                         cursor: SystemMouseCursors.move,
                         child: Row(
@@ -371,7 +614,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'یادداشت حین فعالیت (${widget.realm.labelFa})',
+                                    'یادداشت حین فعالیت (${_realm.labelFa})',
                                     style: const TextStyle(
                                       fontSize: 14,
                                       fontWeight: FontWeight.bold,
@@ -383,10 +626,15 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                   const SizedBox(height: 2),
                                   Text(
                                     '$dateStr — ساعت $timeStr',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 11,
-                                      color: AppColors.textSecondary,
-                                    ),
+                                    style: widget.useGoogleFonts
+                                        ? GoogleFonts.jetBrainsMono(
+                                            fontSize: 11,
+                                            color: AppColors.textSecondary,
+                                          )
+                                        : const TextStyle(
+                                            fontSize: 11,
+                                            color: AppColors.textSecondary,
+                                          ),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -398,7 +646,8 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                               tooltip: 'بستن',
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(),
-                              onPressed: () => windowManager.close(),
+                              onPressed:
+                                  _isSaving ? null : () => hideAndReset(),
                             ),
                           ],
                         ),
@@ -428,7 +677,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
-                                      widget.taskTitle,
+                                      _taskTitle,
                                       style: const TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,
@@ -438,29 +687,20 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
-                                  if (widget.projectName != null) ...[
+                                  if (_projectName != null) ...[
                                     const SizedBox(width: 8),
                                     Container(
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 6, vertical: 2),
                                       decoration: BoxDecoration(
-                                        color: widget.projectColorHex != null
-                                            ? Color(int.parse(widget
-                                                    .projectColorHex!
-                                                    .replaceFirst('#', '0xFF')))
-                                                .withAlpha(40)
-                                            : realmColor.withAlpha(40),
+                                        color: projectColor.withAlpha(40),
                                         borderRadius: BorderRadius.circular(4),
                                       ),
                                       child: Text(
-                                        widget.projectName!,
+                                        _projectName!,
                                         style: TextStyle(
                                           fontSize: 10.5,
-                                          color: widget.projectColorHex != null
-                                              ? Color(int.parse(widget
-                                                  .projectColorHex!
-                                                  .replaceFirst('#', '0xFF')))
-                                              : realmColor,
+                                          color: projectColor,
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
@@ -501,6 +741,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
 
                             TextField(
                               controller: _contentController,
+                              focusNode: _noteFocusNode,
                               maxLines: 4,
                               minLines: 3,
                               style: const TextStyle(
@@ -633,7 +874,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         TextButton(
-                          onPressed: () => windowManager.close(),
+                          onPressed: _isSaving ? null : () => hideAndReset(),
                           child: const Text('انصراف',
                               style: TextStyle(
                                   color: AppColors.textSecondary, fontSize: 12)),

@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 import 'core/constants.dart';
 import 'core/platform_helper.dart';
 import 'models/pomodoro_state.dart';
@@ -11,6 +13,7 @@ import 'providers/app_state_provider.dart';
 import 'services/music_player_service.dart';
 import 'ui/app_shell.dart';
 import 'ui/shared/work_note_standalone_window.dart';
+import 'ui/shared/work_note_window_coordinator.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,6 +34,7 @@ Future<void> main(List<String> args) async {
             taskTitle: data['taskTitle'] as String? ?? 'تسک بدون عنوان',
             projectName: data['projectName'] as String?,
             projectColorHex: data['projectColorHex'] as String?,
+            startHidden: data['prewarm'] == true,
           ));
           return;
         }
@@ -55,8 +59,52 @@ Future<void> main(List<String> args) async {
   );
 }
 
-class MabFocusApp extends StatelessWidget {
+class MabFocusApp extends StatefulWidget {
   const MabFocusApp({super.key});
+
+  @override
+  State<MabFocusApp> createState() => _MabFocusAppState();
+}
+
+class _MabFocusAppState extends State<MabFocusApp> with WindowListener {
+  bool _isDesktopLifecycleAttached = false;
+  bool _isShuttingDown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final provider = context.read<AppStateProvider>();
+    if (PlatformHelper.isDesktop && !provider.isTestMode) {
+      _isDesktopLifecycleAttached = true;
+      windowManager.addListener(this);
+      unawaited(windowManager.setPreventClose(true).catchError((_) {}));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WorkNoteWindowCoordinator.instance.prewarm();
+      });
+    }
+  }
+
+  @override
+  Future<void> onWindowClose() async {
+    if (_isShuttingDown) return;
+    _isShuttingDown = true;
+    try {
+      await WorkNoteWindowCoordinator.instance.disposeHostWindow();
+    } finally {
+      try {
+        await windowManager.setPreventClose(false);
+        await windowManager.close();
+      } catch (_) {}
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_isDesktopLifecycleAttached) {
+      windowManager.removeListener(this);
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

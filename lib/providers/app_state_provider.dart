@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
+import '../ui/shared/work_note_window_coordinator.dart';
 import '../core/constants.dart';
 import '../core/platform_helper.dart';
 import '../models/music_track.dart';
@@ -634,17 +634,20 @@ class AppStateProvider extends ChangeNotifier {
     );
   }
 
+  Future<void> _onExternalSessionNoteAdded() async {
+    try {
+      _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
+      notifyListeners();
+    } catch (_) {}
+  }
+
   void _initMultiWindowSync() {
     if (!PlatformHelper.isDesktop || isTestMode) return;
     try {
-      const channel = WindowMethodChannel('work_notes_sync');
-      channel.setMethodCallHandler((call) async {
-        if (call.method == 'note_added') {
-          _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
-          notifyListeners();
-        }
-        return null;
-      });
+      WorkNoteWindowCoordinator.instance.ensureChannelRegistered();
+      WorkNoteWindowCoordinator.instance.addOnNoteAddedListener(
+        _onExternalSessionNoteAdded,
+      );
     } catch (_) {}
   }
 
@@ -2183,6 +2186,9 @@ class AppStateProvider extends ChangeNotifier {
   @override
   void dispose() {
     _ticker?.cancel();
+    WorkNoteWindowCoordinator.instance.removeOnNoteAddedListener(
+      _onExternalSessionNoteAdded,
+    );
     super.dispose();
   }
 }
