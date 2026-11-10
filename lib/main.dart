@@ -1,39 +1,124 @@
-// نقطه ورود اپلیکیشن، مقداردهی اولیه SQLite FFI و WindowManager
+import 'dart:async';
+import 'dart:convert';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 import 'core/constants.dart';
 import 'core/platform_helper.dart';
+import 'models/pomodoro_state.dart';
 import 'providers/app_state_provider.dart';
+import 'services/music_player_service.dart';
 import 'ui/app_shell.dart';
+import 'ui/shared/work_note_standalone_window.dart';
+import 'ui/shared/work_note_window_coordinator.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  if (PlatformHelper.isDesktop) {
+    try {
+      final windowController = await WindowController.fromCurrentEngine();
+      if (windowController.arguments.isNotEmpty) {
+        final Map<String, dynamic> data =
+            jsonDecode(windowController.arguments);
+        if (data['type'] == 'work_note') {
+          runApp(WorkNoteStandaloneApp(
+            windowController: windowController,
+            realm: AppRealmX.fromDb(data['realm'] as String?),
+            timeRecordId: data['timeRecordId'] as String?,
+            outcomeId: data['outcomeId'] as String?,
+            projectId: data['projectId'] as String?,
+            taskTitle: data['taskTitle'] as String? ?? 'تسک بدون عنوان',
+            projectName: data['projectName'] as String?,
+            projectColorHex: data['projectColorHex'] as String?,
+            startHidden: data['prewarm'] == true,
+          ));
+          return;
+        }
+      }
+    } catch (_) {}
+  }
+
   await PlatformHelper.initWindowManager();
 
   final appState = AppStateProvider();
   await appState.initialize();
 
   runApp(
-    ChangeNotifierProvider<AppStateProvider>.value(
-      value: appState,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<AppStateProvider>.value(value: appState),
+        ChangeNotifierProvider<MusicPlayerService>.value(
+            value: MusicPlayerService.instance),
+      ],
       child: const MabFocusApp(),
     ),
   );
 }
 
-class MabFocusApp extends StatelessWidget {
+class MabFocusApp extends StatefulWidget {
   const MabFocusApp({super.key});
 
   @override
+  State<MabFocusApp> createState() => _MabFocusAppState();
+}
+
+class _MabFocusAppState extends State<MabFocusApp> with WindowListener {
+  bool _isDesktopLifecycleAttached = false;
+  bool _isShuttingDown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final provider = context.read<AppStateProvider>();
+    if (PlatformHelper.isDesktop && !provider.isTestMode) {
+      _isDesktopLifecycleAttached = true;
+      windowManager.addListener(this);
+      unawaited(windowManager.setPreventClose(true).catchError((_) {}));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WorkNoteWindowCoordinator.instance.prewarm();
+      });
+    }
+  }
+
+  @override
+  Future<void> onWindowClose() async {
+    if (_isShuttingDown) return;
+    _isShuttingDown = true;
+    try {
+      await WorkNoteWindowCoordinator.instance.disposeHostWindow();
+    } finally {
+      try {
+        await windowManager.setPreventClose(false);
+        await windowManager.close();
+      } catch (_) {}
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_isDesktopLifecycleAttached) {
+      windowManager.removeListener(this);
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final baseTextTheme = GoogleFonts.vazirmatnTextTheme(
-      ThemeData.dark().textTheme,
+    final palette = context.select<AppStateProvider, RealmPalette>(
+      (p) => p.activePalette,
     );
+    final isLife = context.select<AppStateProvider, bool>(
+      (p) => p.dashboardRealm == AppRealm.life,
+    );
+    final baseTextTheme =
+        GoogleFonts.vazirmatnTextTheme(ThemeData.dark().textTheme);
 
     return MaterialApp(
-      title: 'Mab-Focus',
+      title: 'Mab-Focus v4.0',
       debugShowCheckedModeBanner: false,
       locale: const Locale('fa', 'IR'),
       supportedLocales: const [
@@ -48,11 +133,11 @@ class MabFocusApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: AppColors.background,
-        colorScheme: const ColorScheme.dark(
-          primary: AppColors.focus,
-          secondary: AppColors.breakTime,
-          surface: AppColors.surface,
+        scaffoldBackgroundColor: palette.background,
+        colorScheme: ColorScheme.dark(
+          primary: palette.accent,
+          secondary: isLife ? AppColors.workBlue : AppColors.lifeGreen,
+          surface: palette.surface,
           error: Colors.redAccent,
         ),
         textTheme: baseTextTheme.apply(
@@ -60,11 +145,11 @@ class MabFocusApp extends StatelessWidget {
           displayColor: AppColors.textPrimary,
         ),
         cardTheme: CardThemeData(
-          color: AppColors.surface,
+          color: palette.surface,
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: AppColors.border, width: 1),
+            side: BorderSide(color: palette.border, width: 1),
           ),
         ),
       ),

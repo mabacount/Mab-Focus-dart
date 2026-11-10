@@ -1,254 +1,300 @@
-// کارتابل تکمیل مشخصات تسک‌های بدون عنوان بدون تگ ویرایش
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import '../../core/constants.dart';
-import '../../models/task_log_entry.dart';
-import '../../providers/app_state_provider.dart';
 
-class UntitledInboxTab extends StatelessWidget {
+import '../../core/constants.dart';
+import '../../core/jalali_date.dart';
+import '../../models/outcome_item.dart';
+import '../../models/pomodoro_state.dart';
+import '../../models/time_record.dart';
+import '../../providers/app_state_provider.dart';
+import '../shared/searchable_task_input.dart';
+import '../shared/unified_project_selector.dart';
+
+class UntitledInboxTab extends StatefulWidget {
   const UntitledInboxTab({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Consumer<AppStateProvider>(
-      builder: (context, provider, _) {
-        final drafts = provider.untitledDraftLogs;
+  State<UntitledInboxTab> createState() => _UntitledInboxTabState();
+}
 
-        return Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.draftWarning.withAlpha(25),
-                  borderRadius: BorderRadius.circular(12),
-                  border:
-                      Border.all(color: AppColors.draftWarning.withAlpha(120)),
+class _UntitledInboxTabState extends State<UntitledInboxTab> {
+  AppRealm? _realmFilter;
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.watch<AppStateProvider>();
+    final palette = provider.activePalette;
+    final allDrafts = provider.untitledDraftRecords;
+    final drafts = _realmFilter == null
+        ? allDrafts
+        : allDrafts.where((r) => r.realm == _realmFilter).toList();
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.draftWarning.withAlpha(20),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.draftWarning.withAlpha(80)),
+            ),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text(
+                  'کارتابل رکوردهای بدون عنوان: اتصال به هدف موجود یا تعریف کار جدید و تعیین پروژه بدون دست‌زدن به زمان واقعی (بدون برچسب [Edited]).',
+                  style: TextStyle(fontSize: 12),
                 ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.info_outline_rounded,
-                        color: AppColors.draftWarning),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'کارتابل تسک‌های بدون عنوان: تسک‌هایی که با «شروع فوری» ثبت شده‌اند در این بخش قرار می‌گیرند. تکمیل عنوان، پروژه و تگ در این صفحه به زمان واقعی دست نمی‌زند و تگ [Edited] روی رکورد درج نمی‌کند.',
-                        style: TextStyle(
-                            fontSize: 12.5, color: AppColors.textPrimary),
-                      ),
-                    ),
+                SegmentedButton<AppRealm?>(
+                  style: SegmentedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    selectedBackgroundColor: palette.accent.withAlpha(45),
+                  ),
+                  segments: [
+                    ButtonSegment(
+                        value: null, label: Text('همه (${allDrafts.length})')),
+                    const ButtonSegment(value: AppRealm.work, label: Text('کار')),
+                    const ButtonSegment(
+                        value: AppRealm.life, label: Text('زندگی')),
                   ],
+                  selected: {_realmFilter},
+                  onSelectionChanged: (s) =>
+                      setState(() => _realmFilter = s.first),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: drafts.isEmpty
-                    ? const Center(
-                        child: Text(
-                          'عالی! هیچ تسک بدون عنوانی در کارتابل وجود ندارد.',
-                          style: TextStyle(
-                              color: AppColors.textMuted, fontSize: 14),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: drafts.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          return _UntitledDraftRowCard(draft: drafts[index]);
-                        },
-                      ),
-              ),
-            ],
+              ],
+            ),
           ),
-        );
-      },
+          const SizedBox(height: 12),
+          Expanded(
+            child: drafts.isEmpty
+                ? const Center(
+                    child: Text(
+                      'عالی! هیچ رکورد بدون عنوانی در کارتابل وجود ندارد.',
+                      style: TextStyle(color: AppColors.textMuted),
+                    ),
+                  )
+                : ListView.separated(
+                    itemCount: drafts.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) => _DraftRow(
+                      key: ValueKey(drafts[i].id),
+                      draft: drafts[i],
+                    ),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
 
-class _UntitledDraftRowCard extends StatefulWidget {
-  final TaskLogEntry draft;
-
-  const _UntitledDraftRowCard({required this.draft});
+class _DraftRow extends StatefulWidget {
+  final TimeRecord draft;
+  const _DraftRow({super.key, required this.draft});
 
   @override
-  State<_UntitledDraftRowCard> createState() => _UntitledDraftRowCardState();
+  State<_DraftRow> createState() => _DraftRowState();
 }
 
-class _UntitledDraftRowCardState extends State<_UntitledDraftRowCard> {
-  final TextEditingController _titleController = TextEditingController();
-  String? _selectedMacroId;
-  String? _selectedSubId;
-  final Set<String> _selectedTagIds = {};
+class _DraftRowState extends State<_DraftRow> {
+  final TextEditingController _ctrl = TextEditingController();
+  late AppRealm _targetRealm;
+  String? _projectId;
+  OutcomeItem? _selectedOutcome;
 
   @override
   void initState() {
     super.initState();
-    _selectedMacroId = widget.draft.macroProjectId;
-    _selectedSubId = widget.draft.subProjectId;
-    _selectedTagIds.addAll(widget.draft.tagIds);
+    _targetRealm = widget.draft.realm;
+    _projectId = widget.draft.projectId;
   }
 
   @override
   void dispose() {
-    _titleController.dispose();
+    _ctrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _submit(AppStateProvider provider) async {
+    final text = _ctrl.text.trim();
+    if (text.isEmpty && _selectedOutcome == null) return;
+
+    await provider.completeUntitledDraft(
+      id: widget.draft.id,
+      title: _selectedOutcome?.title ?? text,
+      existingOutcomeId: _selectedOutcome?.id,
+      projectId: _selectedOutcome?.projectId ?? _projectId,
+      newRealm: _targetRealm,
+      tagIds: widget.draft.tagIds,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<AppStateProvider>();
-    final macros = provider.macroProjects;
-    final subs = provider.getSubProjects(_selectedMacroId);
-    final tags = provider.phaseTags;
-
-    final startStr = DateFormat('yyyy/MM/dd | HH:mm')
-        .format(widget.draft.startTime.toLocal());
-    final durMin = (widget.draft.durationSeconds / 60.0).toStringAsFixed(1);
+    final palette = provider.activePalette;
+    final realmColor = _targetRealm == AppRealm.life
+        ? AppColors.lifeGreen
+        : AppColors.workBlue;
+    final startStr =
+        '${JalaliDate.formatWithWeekDay(widget.draft.startTime)} ${DateFormat('HH:mm').format(widget.draft.startTime)}';
+    final min = (widget.draft.durationSeconds / 60).toStringAsFixed(1);
+    final openOutcomes = provider.getOpenOutcomes(realm: _targetRealm);
 
     return Card(
+      color: palette.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: realmColor.withAlpha(90)),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'زمان ثبت‌شده: $startStr  —  مدت: $durMin دقیقه',
-                  style: GoogleFonts.jetBrainsMono(
-                    fontSize: 12,
-                    color: AppColors.draftWarning,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'حذف این پیش‌نویس',
-                  icon: const Icon(Icons.delete_outline,
-                      size: 18, color: Colors.redAccent),
-                  onPressed: () => provider.deleteTaskLog(widget.draft.id),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: TextField(
-                    controller: _titleController,
-                    decoration: const InputDecoration(
-                      hintText: 'عنوان واقعی تسک را وارد کنید...',
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  flex: 2,
-                  child: DropdownButtonFormField<String?>(
-                    initialValue: macros.any((p) => p.id == _selectedMacroId)
-                        ? _selectedMacroId
-                        : null,
-                    decoration: const InputDecoration(
-                      labelText: 'پروژه کلان',
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                    dropdownColor: AppColors.surfaceElevated,
-                    items: [
-                      const DropdownMenuItem<String?>(
-                          value: null, child: Text('بدون پروژه کلان')),
-                      ...macros.map((p) =>
-                          DropdownMenuItem(value: p.id, child: Text(p.name))),
-                    ],
-                    onChanged: (val) {
-                      setState(() {
-                        _selectedMacroId = val;
-                        _selectedSubId = null;
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  flex: 2,
-                  child: DropdownButtonFormField<String?>(
-                    initialValue: subs.any((p) => p.id == _selectedSubId)
-                        ? _selectedSubId
-                        : null,
-                    decoration: const InputDecoration(
-                      labelText: 'زیرپروژه',
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                    dropdownColor: AppColors.surfaceElevated,
-                    items: [
-                      const DropdownMenuItem<String?>(
-                          value: null, child: Text('بدون زیرپروژه')),
-                      ...subs.map((p) =>
-                          DropdownMenuItem(value: p.id, child: Text(p.name))),
-                    ],
-                    onChanged: (val) => setState(() => _selectedSubId = val),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.breakTime,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 14),
-                  ),
-                  icon:
-                      const Icon(Icons.check_circle_outline_rounded, size: 18),
-                  label: const Text('تکمیل و انتقال'),
-                  onPressed: () async {
-                    if (_titleController.text.trim().isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                            content:
-                                Text('لطفاً ابتدا عنوان تسک را وارد کنید.')),
-                      );
-                      return;
-                    }
-                    await provider.completeUntitledDraft(
-                      id: widget.draft.id,
-                      title: _titleController.text.trim(),
-                      macroProjectId: _selectedMacroId,
-                      subProjectId: _selectedSubId,
-                      tagIds: _selectedTagIds.toList(),
-                    );
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
             Wrap(
-              spacing: 6,
-              children: tags.map((tag) {
-                final isSelected = _selectedTagIds.contains(tag.id);
-                return FilterChip(
-                  label: Text(tag.name, style: const TextStyle(fontSize: 11)),
-                  selected: isSelected,
-                  selectedColor: AppColors.focus,
-                  onSelected: (val) {
+              spacing: 8,
+              runSpacing: 6,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: realmColor.withAlpha(35),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        _targetRealm.labelFa,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                          color: realmColor,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '$startStr — $min دقیقه',
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 12,
+                        color: AppColors.draftWarning,
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ActionChip(
+                      avatar: Icon(Icons.swap_horiz_rounded,
+                          size: 14, color: realmColor),
+                      label: Text(
+                        _targetRealm == AppRealm.work
+                            ? 'تبدیل به زندگی'
+                            : 'تبدیل به کار',
+                        style: const TextStyle(fontSize: 10.5),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () {
+                        setState(() {
+                          _targetRealm = _targetRealm == AppRealm.work
+                              ? AppRealm.life
+                              : AppRealm.work;
+                          _selectedOutcome = null;
+                          if (_projectId != null) {
+                            final p = provider.getProjectById(_projectId);
+                            if (p != null && p.realm != _targetRealm) {
+                              _projectId = null;
+                            }
+                          }
+                        });
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          size: 16, color: Colors.redAccent),
+                      onPressed: () =>
+                          provider.deleteTimeRecord(widget.draft.id),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final isCompact = constraints.maxWidth < 680;
+                final inputWidget = SearchableTaskInput(
+                  controller: _ctrl,
+                  openOutcomes: openOutcomes,
+                  projects: provider.projects,
+                  accentColor: realmColor,
+                  hintText: 'انتخاب کار باز موجود یا تایپ عنوان جدید...',
+                  onSelectOutcome: (o) {
                     setState(() {
-                      if (val) {
-                        _selectedTagIds.add(tag.id);
-                      } else {
-                        _selectedTagIds.remove(tag.id);
-                      }
+                      _selectedOutcome = o;
+                      _projectId = o.projectId;
                     });
                   },
+                  onChanged: (_) {
+                    if (_selectedOutcome != null &&
+                        _ctrl.text.trim() != _selectedOutcome!.title) {
+                      setState(() => _selectedOutcome = null);
+                    }
+                  },
+                  onSubmitted: () => _submit(provider),
                 );
-              }).toList(),
+                final projWidget = UnifiedProjectSelector(
+                  projects: provider.projects,
+                  realmFilter: _targetRealm,
+                  selectedProjectId: _projectId,
+                  accentColor: realmColor,
+                  onSelected: (pid) => setState(() => _projectId = pid),
+                );
+                final saveBtn = FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: realmColor),
+                  icon: const Icon(Icons.check_rounded, size: 16),
+                  label: const Text('تکمیل و اتصال'),
+                  onPressed: () => _submit(provider),
+                );
+
+                if (isCompact) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      inputWidget,
+                      const SizedBox(height: 8),
+                      projWidget,
+                      const SizedBox(height: 8),
+                      saveBtn,
+                    ],
+                  );
+                }
+
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 3, child: inputWidget),
+                    const SizedBox(width: 8),
+                    Expanded(flex: 2, child: projWidget),
+                    const SizedBox(width: 8),
+                    saveBtn,
+                  ],
+                );
+              },
             ),
           ],
         ),

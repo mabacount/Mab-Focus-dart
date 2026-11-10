@@ -1,20 +1,24 @@
-// مدل لاگ کارکرد، فیلدهای ممیزی ویرایش [Edited] و وضعیت همگام‌سازی
 import 'dart:convert';
+import '../core/constants.dart';
+import 'pomodoro_state.dart';
 
-class TaskLogEntry {
+/// رکورد زمانی (TimeRecord): یک برش زمانی پیوسته از فعالیت در قلمرو کار یا زندگی
+class TimeRecord {
   final String id;
-  final String title;
+  final AppRealm realm;
+  final ClockType clockMode;
+  final String? outcomeId;
+  final String? projectId;
+  final String titleSnapshot;
   final bool isUntitledDraft;
-  final String? macroProjectId;
-  final String? subProjectId;
   final List<String> tagIds;
   final DateTime startTime;
   final DateTime? endTime;
   final int durationSeconds;
   final int overtimeSeconds;
-  final int pomodoroSetIndex;
+  final int earnedBreakSeconds;
 
-  // فیلدهای ممیزی ویرایش ([Edited])
+  // فیلدهای ممیزی ویرایش
   final bool isEdited;
   final DateTime? originalStartTime;
   final DateTime? originalEndTime;
@@ -22,22 +26,25 @@ class TaskLogEntry {
   final DateTime? editedAt;
   final String? editNote;
 
-  // فیلدهای همگام‌سازی تقویم
+  // فیلدهای همگام‌سازی تقویم گوگل
   final String syncStatus; // 'pending' | 'synced' | 'failed'
   final String? calendarEventId;
+  final String? targetCalendarId;
 
-  const TaskLogEntry({
+  const TimeRecord({
     required this.id,
-    this.title = 'تسک بدون عنوان',
+    this.realm = AppRealm.work,
+    this.clockMode = ClockType.pomodoro,
+    this.outcomeId,
+    this.projectId,
+    this.titleSnapshot = AppDefaults.untitledTaskTitle,
     this.isUntitledDraft = true,
-    this.macroProjectId,
-    this.subProjectId,
     this.tagIds = const [],
     required this.startTime,
     this.endTime,
     this.durationSeconds = 0,
     this.overtimeSeconds = 0,
-    this.pomodoroSetIndex = 1,
+    this.earnedBreakSeconds = 0,
     this.isEdited = false,
     this.originalStartTime,
     this.originalEndTime,
@@ -46,21 +53,31 @@ class TaskLogEntry {
     this.editNote,
     this.syncStatus = 'pending',
     this.calendarEventId,
+    this.targetCalendarId,
   });
+
+  bool get isWork => realm == AppRealm.work;
+  bool get isLife => realm == AppRealm.life;
+  bool get isStopwatch => clockMode == ClockType.stopwatch;
+  bool get isPomodoro => clockMode == ClockType.pomodoro;
+  bool get isOpen => endTime == null;
+  String get title => titleSnapshot;
 
   Map<String, dynamic> toMap() {
     return {
       'id': id,
-      'title': title,
+      'realm': realm.dbValue,
+      'clock_mode': clockMode.dbValue,
+      'outcome_id': outcomeId,
+      'project_id': projectId,
+      'title_snapshot': titleSnapshot,
       'is_untitled_draft': isUntitledDraft ? 1 : 0,
-      'macro_project_id': macroProjectId,
-      'sub_project_id': subProjectId,
       'tag_ids_json': jsonEncode(tagIds),
       'start_time': startTime.toIso8601String(),
       'end_time': endTime?.toIso8601String(),
       'duration_seconds': durationSeconds,
       'overtime_seconds': overtimeSeconds,
-      'pomodoro_set_index': pomodoroSetIndex,
+      'earned_break_seconds': earnedBreakSeconds,
       'is_edited': isEdited ? 1 : 0,
       'original_start_time': originalStartTime?.toIso8601String(),
       'original_end_time': originalEndTime?.toIso8601String(),
@@ -69,63 +86,73 @@ class TaskLogEntry {
       'edit_note': editNote,
       'sync_status': syncStatus,
       'calendar_event_id': calendarEventId,
+      'target_calendar_id': targetCalendarId,
     };
   }
 
-  factory TaskLogEntry.fromMap(Map<String, dynamic> map) {
-    List<String> parsedTagIds = [];
+  factory TimeRecord.fromMap(Map<String, dynamic> map) {
+    List<String> parsedTags = [];
     if (map['tag_ids_json'] != null) {
       try {
         final decoded = jsonDecode(map['tag_ids_json'] as String);
         if (decoded is List) {
-          parsedTagIds = decoded.map((e) => e.toString()).toList();
+          parsedTags = decoded.map((e) => e.toString()).toList();
         }
       } catch (_) {}
     }
 
-    return TaskLogEntry(
+    return TimeRecord(
       id: map['id'] as String,
-      title: map['title'] as String? ?? 'تسک بدون عنوان',
+      realm: AppRealmX.fromDb(map['realm'] as String?),
+      clockMode: ClockTypeX.fromDb(map['clock_mode'] as String?),
+      outcomeId: map['outcome_id'] as String?,
+      projectId: map['project_id'] as String?,
+      titleSnapshot:
+          map['title_snapshot'] as String? ?? AppDefaults.untitledTaskTitle,
       isUntitledDraft: (map['is_untitled_draft'] as int? ?? 0) == 1,
-      macroProjectId: map['macro_project_id'] as String?,
-      subProjectId: map['sub_project_id'] as String?,
-      tagIds: parsedTagIds,
+      tagIds: parsedTags,
       startTime: DateTime.parse(map['start_time'] as String),
       endTime: map['end_time'] != null
-          ? DateTime.parse(map['end_time'] as String)
+          ? DateTime.tryParse(map['end_time'] as String)
           : null,
       durationSeconds: map['duration_seconds'] as int? ?? 0,
       overtimeSeconds: map['overtime_seconds'] as int? ?? 0,
-      pomodoroSetIndex: map['pomodoro_set_index'] as int? ?? 1,
+      earnedBreakSeconds: map['earned_break_seconds'] as int? ?? 0,
       isEdited: (map['is_edited'] as int? ?? 0) == 1,
       originalStartTime: map['original_start_time'] != null
-          ? DateTime.parse(map['original_start_time'] as String)
+          ? DateTime.tryParse(map['original_start_time'] as String)
           : null,
       originalEndTime: map['original_end_time'] != null
-          ? DateTime.parse(map['original_end_time'] as String)
+          ? DateTime.tryParse(map['original_end_time'] as String)
           : null,
       originalDurationSeconds: map['original_duration_seconds'] as int?,
       editedAt: map['edited_at'] != null
-          ? DateTime.parse(map['edited_at'] as String)
+          ? DateTime.tryParse(map['edited_at'] as String)
           : null,
       editNote: map['edit_note'] as String?,
       syncStatus: map['sync_status'] as String? ?? 'pending',
       calendarEventId: map['calendar_event_id'] as String?,
+      targetCalendarId: map['target_calendar_id'] as String?,
     );
   }
 
-  TaskLogEntry copyWith({
+  TimeRecord copyWith({
     String? id,
-    String? title,
+    AppRealm? realm,
+    ClockType? clockMode,
+    String? outcomeId,
+    bool clearOutcomeId = false,
+    String? projectId,
+    bool clearProjectId = false,
+    String? titleSnapshot,
     bool? isUntitledDraft,
-    String? macroProjectId,
-    String? subProjectId,
     List<String>? tagIds,
     DateTime? startTime,
     DateTime? endTime,
+    bool clearEndTime = false,
     int? durationSeconds,
     int? overtimeSeconds,
-    int? pomodoroSetIndex,
+    int? earnedBreakSeconds,
     bool? isEdited,
     DateTime? originalStartTime,
     DateTime? originalEndTime,
@@ -134,19 +161,23 @@ class TaskLogEntry {
     String? editNote,
     String? syncStatus,
     String? calendarEventId,
+    bool clearCalendarEventId = false,
+    String? targetCalendarId,
   }) {
-    return TaskLogEntry(
+    return TimeRecord(
       id: id ?? this.id,
-      title: title ?? this.title,
+      realm: realm ?? this.realm,
+      clockMode: clockMode ?? this.clockMode,
+      outcomeId: clearOutcomeId ? null : (outcomeId ?? this.outcomeId),
+      projectId: clearProjectId ? null : (projectId ?? this.projectId),
+      titleSnapshot: titleSnapshot ?? this.titleSnapshot,
       isUntitledDraft: isUntitledDraft ?? this.isUntitledDraft,
-      macroProjectId: macroProjectId ?? this.macroProjectId,
-      subProjectId: subProjectId ?? this.subProjectId,
       tagIds: tagIds ?? this.tagIds,
       startTime: startTime ?? this.startTime,
-      endTime: endTime ?? this.endTime,
+      endTime: clearEndTime ? null : (endTime ?? this.endTime),
       durationSeconds: durationSeconds ?? this.durationSeconds,
       overtimeSeconds: overtimeSeconds ?? this.overtimeSeconds,
-      pomodoroSetIndex: pomodoroSetIndex ?? this.pomodoroSetIndex,
+      earnedBreakSeconds: earnedBreakSeconds ?? this.earnedBreakSeconds,
       isEdited: isEdited ?? this.isEdited,
       originalStartTime: originalStartTime ?? this.originalStartTime,
       originalEndTime: originalEndTime ?? this.originalEndTime,
@@ -155,7 +186,10 @@ class TaskLogEntry {
       editedAt: editedAt ?? this.editedAt,
       editNote: editNote ?? this.editNote,
       syncStatus: syncStatus ?? this.syncStatus,
-      calendarEventId: calendarEventId ?? this.calendarEventId,
+      calendarEventId: clearCalendarEventId
+          ? null
+          : (calendarEventId ?? this.calendarEventId),
+      targetCalendarId: targetCalendarId ?? this.targetCalendarId,
     );
   }
 }

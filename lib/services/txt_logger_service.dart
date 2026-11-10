@@ -1,11 +1,11 @@
-// لاگر خودکار فایل متنی ChronoFlow_WorkLog.txt
 import 'dart:io';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import '../core/constants.dart';
-import '../models/project_node.dart';
+import '../models/outcome_item.dart';
 import '../models/phase_tag.dart';
+import '../models/pomodoro_state.dart';
 import 'database_service.dart';
 
 class TxtLoggerService {
@@ -28,26 +28,29 @@ class TxtLoggerService {
   }
 
   String _formatDuration(int totalSeconds) {
-    final int minutes = totalSeconds ~/ 60;
-    final int seconds = totalSeconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}m${seconds.toString().padLeft(2, '0')}s';
+    final int h = totalSeconds ~/ 3600;
+    final int m = (totalSeconds % 3600) ~/ 60;
+    final int s = totalSeconds % 60;
+    if (h > 0) {
+      return '${h}h ${m}m ${s}s';
+    }
+    return '${m}m ${s}s';
   }
 
   Future<void> syncTxtFile() async {
     try {
       final filePath = await getEffectiveLogFilePath();
-      final logs = await DatabaseService.instance.getAllTaskLogs();
+      final records = await DatabaseService.instance.getAllTimeRecords();
+      final outcomes = await DatabaseService.instance.getOutcomes();
       final projects =
           await DatabaseService.instance.getProjects(includeArchived: true);
       final tags =
           await DatabaseService.instance.getPhaseTags(includeArchived: true);
 
-      final Map<String, ProjectNode> projectMap = {
-        for (final proj in projects) proj.id: proj,
+      final Map<String, OutcomeItem> outcomeMap = {
+        for (final o in outcomes) o.id: o
       };
-      final Map<String, PhaseTag> tagMap = {
-        for (final tag in tags) tag.id: tag,
-      };
+      final Map<String, PhaseTag> tagMap = {for (final t in tags) t.id: t};
 
       final dateFormat = DateFormat('yyyy-MM-dd');
       final timeFormat = DateFormat('HH:mm:ss');
@@ -55,50 +58,50 @@ class TxtLoggerService {
 
       buffer.writeln(
           '================================================================================');
-      buffer
-          .writeln('MAB-FOCUS (CHRONOFLOW) — WORK LOG & EMPLOYER AUDIT TRAIL');
+      buffer.writeln(
+          'MAB-FOCUS v4.0 — WORK & LIFE CAPACITY OS AUDIT TRAIL');
       buffer.writeln(
           'Last Updated: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now())}');
       buffer.writeln(
-          '================================================================================');
+          '================================================================================\n');
 
-      for (final log in logs) {
-        final dateStr = dateFormat.format(log.startTime.toLocal());
-        final startStr = timeFormat.format(log.startTime.toLocal());
-        final endStr = log.endTime != null
-            ? timeFormat.format(log.endTime!.toLocal())
+      for (final rec in records) {
+        final dateStr = dateFormat.format(rec.startTime.toLocal());
+        final startStr = timeFormat.format(rec.startTime.toLocal());
+        final endStr = rec.endTime != null
+            ? timeFormat.format(rec.endTime!.toLocal())
             : 'در حال اجرا';
-        final durationStr = _formatDuration(log.durationSeconds);
+        final durStr = _formatDuration(rec.durationSeconds);
 
-        final macroName = log.macroProjectId != null
-            ? (projectMap[log.macroProjectId!]?.name ?? 'بدون پروژه کلان')
-            : 'بدون پروژه کلان';
-        final subName = log.subProjectId != null
-            ? (projectMap[log.subProjectId!]?.name ?? '-')
-            : '-';
-        final tagNames = log.tagIds
+        final breadcrumb =
+            DatabaseService.getProjectBreadcrumb(rec.projectId, projects)
+                .map((e) => e.name)
+                .join(' > ');
+        final projectLabel = breadcrumb.isEmpty ? '-' : breadcrumb;
+        final tagNames = rec.tagIds
             .map((id) => tagMap[id]?.name)
             .whereType<String>()
             .join('، ');
-        final tagSection = tagNames.isEmpty ? 'بدون تگ' : tagNames;
+        final resolvedTitle = rec.outcomeId != null
+            ? (outcomeMap[rec.outcomeId]?.title ?? rec.titleSnapshot)
+            : rec.titleSnapshot;
 
-        if (log.isUntitledDraft) {
+        final realmTag = rec.realm.labelFa;
+        final clockTag = rec.clockMode.labelFa;
+
+        if (rec.isUntitledDraft) {
           buffer.writeln(
-            '[$dateStr | $startStr -$endStr | $durationStr] [نیازمند تکمیل] ${log.title}',
-          );
-        } else if (log.isEdited) {
+              '[$dateStr | $startStr - $endStr | $durStr] [$realmTag/$clockTag] [نیازمند تکمیل] $resolvedTitle');
+        } else if (rec.isEdited) {
           final origDur = _formatDuration(
-              log.originalDurationSeconds ?? log.durationSeconds);
-          final notePart =
-              (log.editNote != null && log.editNote!.trim().isNotEmpty)
-                  ? ' (علت: ${log.editNote!.trim()})'
-                  : '';
+              rec.originalDurationSeconds ?? rec.durationSeconds);
+          final note = rec.editNote != null ? ' (علت: ${rec.editNote})' : '';
           buffer.writeln(
-            '[$dateStr | $startStr -$endStr | $durationStr] [EDITED / ویرایش‌شده - زمان اولیه: $origDur] [$macroName >$subName | $tagSection]${log.title}$notePart',
+            '[$dateStr | $startStr - $endStr | $durStr] [$realmTag/$clockTag] [EDITED - زمان اولیه: $origDur] [$projectLabel | $tagNames] $resolvedTitle$note',
           );
         } else {
           buffer.writeln(
-            '[$dateStr \vert{}$startStr - $endStr \vert{}$durationStr] [$macroName >$subName | $tagSection]${log.title}',
+            '[$dateStr | $startStr - $endStr | $durStr] [$realmTag/$clockTag] [$projectLabel | $tagNames] $resolvedTitle',
           );
         }
       }
@@ -108,9 +111,7 @@ class TxtLoggerService {
         await file.parent.create(recursive: true);
       }
       await file.writeAsString(buffer.toString(), flush: true);
-    } catch (_) {
-      // جلوگیری از توقف تایمر در صورت قفل بودن موقت فایل در سیستم‌عامل
-    }
+    } catch (_) {}
   }
 
   Future<String> readLogFileContent() async {
@@ -120,7 +121,7 @@ class TxtLoggerService {
       if (await file.exists()) {
         return await file.readAsString();
       }
-      return 'فایل گزارش متنی هنوز ایجاد نشده است.';
+      return 'فایل لاگ هنوز ایجاد نشده است.';
     } catch (e) {
       return 'خطا در خواندن فایل متنی: $e';
     }
