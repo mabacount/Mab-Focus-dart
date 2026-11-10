@@ -8,7 +8,8 @@ class AppColors {
 
   static const Color focus = Color(0xFF3B82F6);
   static const Color breakTime = Color(0xFF10B981);
-  static const Color overtime = Color(0xFFF59E0B);
+  static const Color golden = Color(0xFFFFB703);
+  static const Color overtime = Color(0xFFFF5722); // نارنجی متمایل به قرمز برای اضافه‌کاری متمایز از ستاره طلایی
   static const Color stopwatch = Color(0xFF06B6D4);
   static const Color edited = Color(0xFF8B5CF6);
   static const Color draftWarning = Color(0xFFF59E0B);

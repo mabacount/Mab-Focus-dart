@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -7,9 +9,32 @@ import 'core/platform_helper.dart';
 import 'providers/app_state_provider.dart';
 import 'services/music_player_service.dart';
 import 'ui/app_shell.dart';
+import 'ui/shared/work_note_standalone_window.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  if (PlatformHelper.isDesktop) {
+    try {
+      final windowController = await WindowController.fromCurrentEngine();
+      if (windowController.arguments.isNotEmpty) {
+        final Map<String, dynamic> data =
+            jsonDecode(windowController.arguments);
+        if (data['type'] == 'work_note') {
+          runApp(WorkNoteStandaloneApp(
+            windowController: windowController,
+            taskLogId: data['taskLogId'] as String?,
+            projectId: data['projectId'] as String?,
+            taskTitle: data['taskTitle'] as String? ?? 'تسک بدون عنوان',
+            projectName: data['projectName'] as String?,
+            projectColorHex: data['projectColorHex'] as String?,
+          ));
+          return;
+        }
+      }
+    } catch (_) {}
+  }
+
   await PlatformHelper.initWindowManager();
 
   final appState = AppStateProvider();

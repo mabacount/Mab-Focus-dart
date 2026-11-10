@@ -25,10 +25,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   final List<Widget> _tabs = const [
     CalendarGridTab(),
-    CapacityThievesTab(),
     ActivityLogTab(),
-    UntitledInboxTab(),
     ProjectStudioTab(),
+    CapacityThievesTab(),
+    UntitledInboxTab(),
     SettingsTab(),
   ];
 
@@ -38,6 +38,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final music = context.watch<MusicPlayerService>();
     final state = provider.pomodoroState;
     final untitledCount = provider.untitledDraftLogs.length;
+    final notesCount = provider.workNotes.length;
     final isWide = MediaQuery.of(context).size.width >= 900;
 
     Color statusColor = AppColors.focus;
@@ -226,17 +227,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const NavigationRailDestination(
                   icon: Icon(Icons.calendar_month_outlined),
                   selectedIcon: Icon(Icons.calendar_month_rounded),
-                  label: Text('تقویم هوشمند (Google)'),
+                  label: Text('تقویم و تایم‌شیت کارکرد'),
+                ),
+                NavigationRailDestination(
+                  icon: Badge(
+                    isLabelVisible: notesCount > 0,
+                    backgroundColor: AppColors.focus,
+                    label: Text('$notesCount'),
+                    child: const Icon(Icons.assignment_outlined),
+                  ),
+                  selectedIcon: Badge(
+                    isLabelVisible: notesCount > 0,
+                    backgroundColor: AppColors.focus,
+                    label: Text('$notesCount'),
+                    child: const Icon(Icons.assignment_rounded),
+                  ),
+                  label: const Text('گزارش‌ها و یادداشت‌ها'),
+                ),
+                const NavigationRailDestination(
+                  icon: Icon(Icons.account_tree_outlined),
+                  selectedIcon: Icon(Icons.account_tree_rounded),
+                  label: Text('استودیوی پروژه‌ها'),
                 ),
                 const NavigationRailDestination(
                   icon: Icon(Icons.pie_chart_outline_rounded),
                   selectedIcon: Icon(Icons.pie_chart_rounded),
                   label: Text('سند ظرفیت و سارقان زمان'),
-                ),
-                const NavigationRailDestination(
-                  icon: Icon(Icons.table_chart_outlined),
-                  selectedIcon: Icon(Icons.table_chart_rounded),
-                  label: Text('جدول تایم‌شیت و کارکرد'),
                 ),
                 NavigationRailDestination(
                   icon: Badge(
@@ -252,11 +268,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: const Icon(Icons.inbox_rounded),
                   ),
                   label: const Text('کارتابل بدون عنوان'),
-                ),
-                const NavigationRailDestination(
-                  icon: Icon(Icons.account_tree_outlined),
-                  selectedIcon: Icon(Icons.account_tree_rounded),
-                  label: Text('استودیوی پروژه‌ها'),
                 ),
                 const NavigationRailDestination(
                   icon: Icon(Icons.settings_outlined),
@@ -279,11 +290,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
               destinations: [
                 const NavigationDestination(
                     icon: Icon(Icons.calendar_month_outlined), label: 'تقویم'),
+                NavigationDestination(
+                  icon: Badge(
+                    isLabelVisible: notesCount > 0,
+                    label: Text('$notesCount'),
+                    child: const Icon(Icons.assignment_outlined),
+                  ),
+                  label: 'گزارش و یادداشت',
+                ),
                 const NavigationDestination(
-                    icon: Icon(Icons.pie_chart_outline_rounded),
-                    label: 'ظرفیت'),
+                    icon: Icon(Icons.account_tree_outlined), label: 'پروژه‌ها'),
                 const NavigationDestination(
-                    icon: Icon(Icons.table_chart_outlined), label: 'تایم‌شیت'),
+                    icon: Icon(Icons.pie_chart_outline_rounded), label: 'ظرفیت'),
                 NavigationDestination(
                   icon: Badge(
                     isLabelVisible: untitledCount > 0,
@@ -292,8 +310,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   label: 'نواقص',
                 ),
-                const NavigationDestination(
-                    icon: Icon(Icons.account_tree_outlined), label: 'پروژه‌ها'),
                 const NavigationDestination(
                     icon: Icon(Icons.settings_outlined), label: 'تنظیمات'),
               ],

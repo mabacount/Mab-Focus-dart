@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 import '../models/pomodoro_state.dart';
@@ -9,12 +10,22 @@ class PlatformHelper {
   static bool get isDesktop =>
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
-  static const double unhoveredSize = 84.0;
-  static const double baseCircleSize = 68.0;
-  static const double hoveredWidth = 340.0;
-  static const double hoveredHeight = 145.0;
+  static const MethodChannel _vDesktopChannel =
+      MethodChannel('com.mabfocus.app/virtual_desktop');
+
+  static const double unhoveredSize = 240.0;
+  static const double baseCircleSize = 78.0;
+  static const double hoveredWidth = 240.0;
+  static const double hoveredHeight = 180.0;
   static const double expandedSheetWidth = 340.0;
   static const double expandedSheetHeight = 460.0;
+
+  static Future<void> pinToAllVirtualDesktops() async {
+    if (!Platform.isWindows) return;
+    try {
+      await _vDesktopChannel.invokeMethod('pinToAllDesktops');
+    } catch (_) {}
+  }
 
   static Future<void> initWindowManager() async {
     if (!isDesktop) return;
@@ -33,6 +44,7 @@ class PlatformHelper {
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.show();
       await windowManager.focus();
+      await pinToAllVirtualDesktops();
     });
   }
 
@@ -66,58 +78,41 @@ class PlatformHelper {
     return false;
   }
 
-  /// تغییر اندازه پنجره ویندوز بر اساس وضعیت هاور جهت آزاد شدن کلیک‌های اطراف دایره
-  static Future<void> setFloatingWidgetHovered(
-    bool isHovered, {
-    bool buttonsOnRight = false,
-    bool isSheetExpanded = false,
-  }) async {
+  /// به‌روزرسانی ابعاد پنجره در صورت باز یا بسته شدن کوئیک‌شیت (تنظیمات)
+  static Future<void> updateFloatingSheetExpansion(bool isSheetExpanded) async {
     if (!isDesktop) return;
     try {
       final currentPos = await windowManager.getPosition();
       final currentSize = await windowManager.getSize();
 
-      // محاسبه مختصات مرکز دایره روی نمایشگر فیزیکی
-      final double cx;
-      final double cy;
+      final double cx = currentPos.dx + (currentSize.width / 2.0);
+      final double cy = currentPos.dy + 80.0;
 
-      if (currentSize.width <= 110.0) {
-        // اندازه پنجره در حالت بسته: unhoveredSize x unhoveredSize
-        cx = currentPos.dx + (currentSize.width / 2.0);
-        cy = currentPos.dy + (currentSize.height / 2.0);
-      } else {
-        // اندازه پنجره در حالت باز: 340x145
-        final double circleXInWindow = buttonsOnRight ? 78.0 : (340.0 - 78.0);
-        const double circleYInWindow = 44.0;
-        cx = currentPos.dx + circleXInWindow;
-        cy = currentPos.dy + circleYInWindow;
-      }
+      final double targetWidth =
+          isSheetExpanded ? expandedSheetWidth : hoveredWidth;
+      final double targetHeight =
+          isSheetExpanded ? expandedSheetHeight : hoveredHeight;
 
-      if (isSheetExpanded) {
-        await windowManager
-            .setSize(const Size(expandedSheetWidth, expandedSheetHeight));
-        final double targetX =
-            buttonsOnRight ? (cx - 78.0) : (cx - (340.0 - 78.0));
-        final double targetY = cy - 44.0;
-        await windowManager.setPosition(Offset(targetX, targetY));
-      } else if (isHovered) {
-        // باز شدن پنجره به 340x145 به طور دقیق دور مرکز دایره
-        final double targetX =
-            buttonsOnRight ? (cx - 78.0) : (cx - (340.0 - 78.0));
-        final double targetY = cy - 44.0;
-        await windowManager.setSize(const Size(hoveredWidth, hoveredHeight));
-        await windowManager.setPosition(Offset(targetX, targetY));
-      } else {
-        // جمع شدن پنجره به 84x84 دقیقاً روی دایره تا فضای اطراف برای کلیک آزاد شود
-        final double targetX = cx - (unhoveredSize / 2.0);
-        final double targetY = cy - (unhoveredSize / 2.0);
-        await windowManager.setSize(const Size(unhoveredSize, unhoveredSize));
-        await windowManager.setPosition(Offset(targetX, targetY));
-      }
+      final double targetX = cx - (targetWidth / 2.0);
+      final double targetY = cy - 80.0;
+
+      await windowManager.setSize(Size(targetWidth, targetHeight));
+      await windowManager.setPosition(Offset(targetX, targetY));
     } catch (_) {}
   }
 
-  /// انتقال به حالت ویجت شناور (با اندازه اولیه ۸۴×۸۴ جهت آزاد بودن اطراف دایره)
+  /// سازگاری با متدهای قدیمی - در حالت هاور پنجره نیتیو تغییر اندازه پیدا نمی‌کند تا از پرش و تکان خوردن جلوگیری شود
+  static Future<void> setFloatingWidgetHovered(
+    bool isHovered, {
+    bool isSheetExpanded = false,
+  }) async {
+    // برای پایداری ۱۰۰٪ پنجره، عملیات هاور به صورت انیمیشن خالص فلاتر اجرا می‌شود و نیازی به تغییر سایز پنجره سیستم‌عامل نیست.
+    if (isSheetExpanded) {
+      await updateFloatingSheetExpansion(true);
+    }
+  }
+
+  /// انتقال به حالت ویجت شناور
   static Future<void> switchToFloatingWidgetMode({
     bool isSheetExpanded = false,
     bool isPinned = true,
@@ -139,9 +134,9 @@ class PlatformHelper {
     final double screenHeight = display.size.height;
 
     final double targetWidth =
-        isSheetExpanded ? expandedSheetWidth : unhoveredSize;
+        isSheetExpanded ? expandedSheetWidth : hoveredWidth;
     final double targetHeight =
-        isSheetExpanded ? expandedSheetHeight : unhoveredSize;
+        isSheetExpanded ? expandedSheetHeight : hoveredHeight;
 
     final double maxX = screenLeft + screenWidth - targetWidth;
     final double maxY = screenTop + screenHeight - targetHeight;
@@ -153,6 +148,7 @@ class PlatformHelper {
 
     await windowManager.setSize(Size(targetWidth, targetHeight));
     await windowManager.setPosition(Offset(newX, newY));
+    await pinToAllVirtualDesktops();
   }
 
   static Future<void> switchToEdgeDockedMode(bool isLeft) async {
@@ -171,6 +167,7 @@ class PlatformHelper {
     final double targetY =
         currentPos.dy.clamp(40.0, display.size.height - 180.0);
     await windowManager.setPosition(Offset(targetX, targetY));
+    await pinToAllVirtualDesktops();
   }
 
   static Future<WindowPosture?> checkEdgeSnapCondition() async {

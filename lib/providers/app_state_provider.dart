@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../core/constants.dart';
@@ -9,6 +10,7 @@ import '../models/project_node.dart';
 import '../models/task_log_entry.dart';
 import '../models/scheduled_block.dart';
 import '../models/music_track.dart';
+import '../models/work_note_entry.dart';
 import '../services/database_service.dart';
 import '../services/excel_export_service.dart';
 import '../services/gcal_sync_service.dart';
@@ -41,14 +43,37 @@ class AppStateProvider extends ChangeNotifier {
   String _txtLogPath = '';
   String _gcalToken = '';
   bool _isQuickMenuExpanded = false;
+  bool _isWorkNoteOpen = false;
   String? _lastErgonomicNudgeMessage;
   bool _isPinned = true;
+  bool _isGoldenScheduledTaskActive = false;
+  List<WorkNoteEntry> _workNotes = [];
+
+  // اسنپ‌شات آخرین تسک کاری برای بازگشت خودکار بعد از استراحت
+  String? _previousWorkTitle;
+  String? _previousWorkMacroProjectId;
+  String? _previousWorkSubProjectId;
+  List<String> _previousWorkTagIds = [];
+  String? _previousWorkGroupId;
+  bool _previousWorkWasGolden = false;
 
   // ==================== Getters ====================
 
   PomodoroState get pomodoroState => _pomodoroState;
   TaskLogEntry? get activeTaskLog => _activeTaskLog;
   int get activeTaskElapsedSeconds => _activeTaskElapsedSeconds;
+  bool get isGoldenScheduledTaskActive => _isGoldenScheduledTaskActive;
+  List<WorkNoteEntry> get workNotes => _workNotes;
+
+  ScheduledBlock? get currentActiveScheduledBlock {
+    final now = DateTime.now();
+    for (final b in _scheduledBlocks) {
+      if (b.startTime.isBefore(now) && b.endTime.isAfter(now)) {
+        return b;
+      }
+    }
+    return null;
+  }
   List<ProjectNode> get projects => _projects;
   List<ProjectNode> get macroProjects =>
       _projects.where((p) => p.isMacro && !p.isArchived).toList();
@@ -73,6 +98,14 @@ class AppStateProvider extends ChangeNotifier {
   String get txtLogPath => _txtLogPath;
   String get gcalToken => _gcalToken;
   bool get isQuickMenuExpanded => _isQuickMenuExpanded;
+  bool get isWorkNoteOpen => _isWorkNoteOpen;
+
+  void setWorkNoteOpen(bool value) {
+    if (_isWorkNoteOpen != value) {
+      _isWorkNoteOpen = value;
+      notifyListeners();
+    }
+  }
   String? get lastErgonomicNudgeMessage => _lastErgonomicNudgeMessage;
   bool get isPinned => _isPinned;
 
@@ -96,6 +129,43 @@ class AppStateProvider extends ChangeNotifier {
       if (t.id == id) return t;
     }
     return null;
+  }
+
+  // ==================== تسک طلایی (Golden Task / Star Mode) ====================
+
+  Future<void> toggleGoldenScheduledTask([ScheduledBlock? targetBlock]) async {
+    if (_isGoldenScheduledTaskActive) {
+      _isGoldenScheduledTaskActive = false;
+      notifyListeners();
+    } else {
+      final block = targetBlock ?? currentActiveScheduledBlock;
+      if (block != null) {
+        _isGoldenScheduledTaskActive = true;
+        final project = getProjectById(block.projectId);
+        await startInstantWork(
+          title: block.title,
+          macroProjectId:
+              project?.isMacro == true ? project?.id : project?.parentId,
+          subProjectId: project?.isSubProject == true ? project?.id : null,
+        );
+        _isGoldenScheduledTaskActive = true;
+        notifyListeners();
+      } else if (_activeTaskLog != null) {
+        _isGoldenScheduledTaskActive = true;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> activateScheduledBlockTask(ScheduledBlock block) async {
+    await toggleGoldenScheduledTask(block);
+  }
+
+  void deactivateGoldenTask() {
+    if (_isGoldenScheduledTaskActive) {
+      _isGoldenScheduledTaskActive = false;
+      notifyListeners();
+    }
   }
 
   // ==================== مقداردهی اولیه ====================
@@ -138,6 +208,22 @@ class AppStateProvider extends ChangeNotifier {
         targetSeconds: _focusDurationMinutes * 60,
       );
     }
+
+    _initMultiWindowSync();
+  }
+
+  void _initMultiWindowSync() {
+    if (!PlatformHelper.isDesktop) return;
+    try {
+      const channel = WindowMethodChannel('work_notes_sync');
+      channel.setMethodCallHandler((call) async {
+        if (call.method == 'note_added') {
+          _workNotes = await DatabaseService.instance.getAllWorkNotes();
+          notifyListeners();
+        }
+        return null;
+      });
+    } catch (_) {}
   }
 
   Future<void> refreshAllData() async {
@@ -146,6 +232,7 @@ class AppStateProvider extends ChangeNotifier {
     _phaseTags = await db.getPhaseTags(includeArchived: true);
     _taskLogs = await db.getAllTaskLogs();
     _playlists = await db.getAllMusicPlaylists();
+    _workNotes = await db.getAllWorkNotes();
 
     final now = DateTime.now();
     final startRange = now.subtract(const Duration(days: 14));
@@ -153,6 +240,31 @@ class AppStateProvider extends ChangeNotifier {
     _scheduledBlocks = await db.getScheduledBlocksInRange(startRange, endRange);
 
     notifyListeners();
+  }
+
+  // ==================== مدیریت یادداشت‌های گزارش کار حین فعالیت ====================
+
+  Future<void> saveWorkNote(WorkNoteEntry note) async {
+    await DatabaseService.instance.insertWorkNote(note);
+    _workNotes = await DatabaseService.instance.getAllWorkNotes();
+    notifyListeners();
+
+    // همگام‌سازی در فایل متنی
+    await TxtLoggerService.instance.syncTxtFile();
+  }
+
+  Future<void> deleteWorkNote(String id) async {
+    await DatabaseService.instance.deleteWorkNote(id);
+    _workNotes = await DatabaseService.instance.getAllWorkNotes();
+    notifyListeners();
+  }
+
+  Future<String?> exportWorkNotesToExcel(
+      [List<WorkNoteEntry>? customList]) async {
+    return await ExcelExportService.instance.exportWorkNotesToExcel(
+      notes: customList ?? _workNotes,
+      projects: _projects,
+    );
   }
 
   // ==================== موتور زمان‌سنج بر پایه Timestamp-Delta ====================
@@ -247,6 +359,16 @@ class AppStateProvider extends ChangeNotifier {
     final now = DateTime.now();
 
     if (_pomodoroState.isWork) {
+      // ذخیره اسنپ‌شات آخرین تسک کاری جهت بازگشت خودکار بعد از استراحت
+      if (_activeTaskLog != null) {
+        _previousWorkTitle = _activeTaskLog!.title;
+        _previousWorkMacroProjectId = _activeTaskLog!.macroProjectId;
+        _previousWorkSubProjectId = _activeTaskLog!.subProjectId;
+        _previousWorkTagIds = List.from(_activeTaskLog!.tagIds);
+        _previousWorkGroupId = _activeTaskLog!.groupId;
+        _previousWorkWasGolden = _isGoldenScheduledTaskActive;
+      }
+
       // از کار به زندگی
       await _closeAndPersistActiveTask();
 
@@ -294,19 +416,28 @@ class AppStateProvider extends ChangeNotifier {
       _ensureTickerRunning();
       await refreshAllData();
     } else {
-      // از زندگی به کار
+      // از زندگی به کار: بازگشت خودکار به تسک قبلی که انتخاب شده بود
       await _closeAndPersistActiveTask();
 
       _accumulatedPhaseSeconds = 0;
       _phaseStartedAt = now;
       _lastErgonomicNudgeMessage = null;
 
+      final String resumeTitle =
+          (_previousWorkTitle != null && _previousWorkTitle!.isNotEmpty)
+              ? _previousWorkTitle!
+              : AppDefaults.untitledTaskTitle;
+      final bool isUntitled = resumeTitle == AppDefaults.untitledTaskTitle;
+
       final workEntry = TaskLogEntry(
         id: _uuid.v4(),
-        groupId: _uuid.v4(),
+        groupId: _previousWorkGroupId ?? _uuid.v4(),
         entryType: _pomodoroState.isStopwatch ? 'stopwatch' : 'work',
-        title: AppDefaults.untitledTaskTitle,
-        isUntitledDraft: true,
+        title: resumeTitle,
+        isUntitledDraft: isUntitled,
+        macroProjectId: _previousWorkMacroProjectId,
+        subProjectId: _previousWorkSubProjectId,
+        tagIds: _previousWorkTagIds,
         startTime: now,
         pomodoroSetIndex:
             (_pomodoroState.completedSetsInCycle % AppDurations.setsPerCycle) + 1,
@@ -316,6 +447,7 @@ class AppStateProvider extends ChangeNotifier {
       _accumulatedTaskSeconds = 0;
       _activeTaskElapsedSeconds = 0;
       _taskSliceStartedAt = now;
+      _isGoldenScheduledTaskActive = _previousWorkWasGolden;
 
       _pomodoroState = _pomodoroState.copyWith(
         realm: AppRealm.work,
@@ -569,6 +701,11 @@ class AppStateProvider extends ChangeNotifier {
         title.trim().isEmpty ? AppDefaults.untitledTaskTitle : title.trim();
     final isUntitled = cleanTitle == AppDefaults.untitledTaskTitle;
 
+    // هر زمان که عنوان تسک عوض شد، لازم است که ستاره غیرفعال شود
+    if (_activeTaskLog?.title != cleanTitle) {
+      _isGoldenScheduledTaskActive = false;
+    }
+
     final updated = _activeTaskLog!.copyWith(
       title: cleanTitle,
       isUntitledDraft: isUntitled,
@@ -590,6 +727,7 @@ class AppStateProvider extends ChangeNotifier {
     required List<String> tagIds,
     String? existingGroupId,
   }) async {
+    _isGoldenScheduledTaskActive = false;
     await _closeAndPersistActiveTask();
 
     final now = DateTime.now();
@@ -626,6 +764,16 @@ class AppStateProvider extends ChangeNotifier {
   /// شروع استراحت با ثبت رکورد استراحت در دیتابیس
   Future<void> startBreak() async {
     final now = DateTime.now();
+
+    if (_activeTaskLog != null && _pomodoroState.isWork) {
+      _previousWorkTitle = _activeTaskLog!.title;
+      _previousWorkMacroProjectId = _activeTaskLog!.macroProjectId;
+      _previousWorkSubProjectId = _activeTaskLog!.subProjectId;
+      _previousWorkTagIds = List.from(_activeTaskLog!.tagIds);
+      _previousWorkGroupId = _activeTaskLog!.groupId;
+      _previousWorkWasGolden = _isGoldenScheduledTaskActive;
+    }
+
     final int nextSets = _pomodoroState.isWork
         ? _pomodoroState.completedSetsInCycle + 1
         : _pomodoroState.completedSetsInCycle;
@@ -796,10 +944,7 @@ class AppStateProvider extends ChangeNotifier {
     _isQuickMenuExpanded = expanded;
     notifyListeners();
     if (_pomodoroState.windowPosture == WindowPosture.floatingCircle) {
-      await PlatformHelper.switchToFloatingWidgetMode(
-        isSheetExpanded: expanded,
-        isPinned: _isPinned,
-      );
+      await PlatformHelper.updateFloatingSheetExpansion(expanded);
     }
   }
 

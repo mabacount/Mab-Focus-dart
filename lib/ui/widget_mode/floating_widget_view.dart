@@ -9,6 +9,7 @@ import '../../core/platform_helper.dart';
 import '../../models/pomodoro_state.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/music_player_service.dart';
+import '../shared/work_note_dialog.dart';
 import 'quick_task_sheet.dart';
 
 class FloatingWidgetView extends StatefulWidget {
@@ -22,7 +23,6 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     with WindowListener {
   bool _isHovered = false;
   bool _isCheckingSnap = false;
-  bool _buttonsOnRight = false;
   Timer? _hoverDebounceTimer;
 
   @override
@@ -30,14 +30,6 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     super.initState();
     if (PlatformHelper.isDesktop) {
       windowManager.addListener(this);
-      _checkInitialEdgePosition();
-    }
-  }
-
-  void _checkInitialEdgePosition() async {
-    final nearLeft = await PlatformHelper.isNearLeftEdge();
-    if (mounted && nearLeft != _buttonsOnRight) {
-      setState(() => _buttonsOnRight = nearLeft);
     }
   }
 
@@ -60,12 +52,6 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     }
     if (provider.isQuickMenuExpanded) return;
 
-    // بررسی نزدیکی به لبه چپ نمایشگر
-    final nearLeft = await PlatformHelper.isNearLeftEdge();
-    if (mounted && nearLeft != _buttonsOnRight) {
-      setState(() => _buttonsOnRight = nearLeft);
-    }
-
     _isCheckingSnap = true;
     final snapPosture = await PlatformHelper.checkEdgeSnapCondition();
     if (snapPosture != null && mounted) {
@@ -78,37 +64,35 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     _hoverDebounceTimer?.cancel();
     if (!_isHovered && mounted) {
       setState(() => _isHovered = true);
-      final provider = context.read<AppStateProvider>();
-      PlatformHelper.setFloatingWidgetHovered(
-        true,
-        buttonsOnRight: _buttonsOnRight,
-        isSheetExpanded: provider.isQuickMenuExpanded,
-      );
     }
   }
 
   void _onMouseExit() {
     _hoverDebounceTimer?.cancel();
-    _hoverDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+    _hoverDebounceTimer = Timer(const Duration(milliseconds: 400), () {
       final provider = context.read<AppStateProvider>();
-      if (mounted && _isHovered && !provider.isQuickMenuExpanded) {
+      if (mounted && _isHovered && !provider.isQuickMenuExpanded && !provider.isWorkNoteOpen) {
         setState(() => _isHovered = false);
-        PlatformHelper.setFloatingWidgetHovered(
-          false,
-          buttonsOnRight: _buttonsOnRight,
-          isSheetExpanded: false,
-        );
       }
     });
   }
 
-  Color _resolveRingColor(PomodoroState state) {
-    if (state.isStopwatch) {
-      return state.isWork ? AppColors.stopwatch : AppColors.breakTime;
+  Color _resolveRingColor(PomodoroState state, {bool isGolden = false}) {
+    // چه در حالت ستاره و چه غیر ستاره، رنگ استراحت باید همیشه سبز باقی بماند
+    if (!state.isWork || state.isLife) {
+      return AppColors.breakTime;
     }
-    if (state.isOvertime) return AppColors.overtime;
-    if (state.isWork) return AppColors.focus;
-    return AppColors.breakTime;
+    // رنگ اضافه‌کاری بیش از حد با رنگ نارنجی مایل به قرمز متمایز از ستاره طلایی
+    if (state.isOvertime) {
+      return AppColors.overtime;
+    }
+    if (state.isStopwatch) {
+      return AppColors.stopwatch;
+    }
+    if (isGolden) {
+      return AppColors.golden;
+    }
+    return AppColors.focus;
   }
 
   @override
@@ -116,8 +100,17 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     return Consumer2<AppStateProvider, MusicPlayerService>(
       builder: (context, provider, music, _) {
         final state = provider.pomodoroState;
-        final ringColor = _resolveRingColor(state);
+        final isGolden = provider.isGoldenScheduledTaskActive;
+        final ringColor = _resolveRingColor(state, isGolden: isGolden);
         final bool showFullMenu = _isHovered || provider.isQuickMenuExpanded;
+
+        // اگر فرم ثبت یادداشت باز است، المان‌های دایره و هاله پنهان می‌شوند تا هیچ تداخل یا هم‌پوشانی نامناسبی در پس‌زمینه نباشد
+        if (provider.isWorkNoteOpen) {
+          return const Scaffold(
+            backgroundColor: Colors.transparent,
+            body: SizedBox.expand(),
+          );
+        }
 
         // ۱. حالت نوار کناری چسبیده به لبه مانیتور (Edge-Docked)
         if (state.windowPosture == WindowPosture.edgeDockedLeft ||
@@ -167,14 +160,17 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
           );
         }
 
-        // هندسه دقیق چیدمان در پنجره ۳۴۰ پیکسلی:
-        // دایره با ابعاد ۶۸×۶۸ در فاصله ۴۴ پیکسلی از لبه پنجره قرار دارد.
-        // مرکز دایره دقیقاً در فاصله ۷۸ پیکسلی (۴۴ + ۳۴) از لبه مهار شده است.
-        const double circleTop = 10.0;
-        const double circleEdge = 44.0;
-        const double circleSize = 68.0;
+        // اندازه دایره: کمی بزرگ‌تر شده (78px) تا زمان منفی بیرون نزند
+        const double circleSize = PlatformHelper.baseCircleSize; // 78.0
+        final double windowW = provider.isQuickMenuExpanded
+            ? PlatformHelper.expandedSheetWidth
+            : PlatformHelper.hoveredWidth; // 240.0
 
-        // دایره تایمر اصلی (تنها بخش درگ و جابه‌جایی پنجره)
+        // مرکز دایره دقیقاً در مرکز افقی پنجره
+        final double centerX = windowW / 2.0;
+        const double centerY = 75.0;
+
+        // دایره تایمر اصلی
         final timerCircle = MouseRegion(
           onEnter: (_) => _onMouseEnter(),
           onExit: (_) => _onMouseExit(),
@@ -198,7 +194,7 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withAlpha(150),
-                    blurRadius: 12,
+                    blurRadius: 14,
                     offset: const Offset(0, 4),
                   ),
                 ],
@@ -208,8 +204,8 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                 children: [
                   // حلقه پیشرفت زمان
                   SizedBox(
-                    width: 58,
-                    height: 58,
+                    width: 70,
+                    height: 70,
                     child: CustomPaint(
                       painter: _CompactRingPainter(
                         progress: state.isOvertime || state.isStopwatch
@@ -220,33 +216,45 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                     ),
                   ),
 
-                  // متن زمان و نقطه وضعیت
+                  // متن زمان و نقطه یا ستاره وضعیت
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
                         state.formattedDisplayTime,
                         style: GoogleFonts.jetBrainsMono(
-                          fontSize: state.isStopwatch &&
-                                  state.elapsedSeconds >= 3600
-                              ? 12.5
-                              : 16.5,
+                          // زمان منفی (دارای علامت منفی) یا زمان بلند با اندازه ۱۳.۵ تا از کادر بیرون نزند
+                          fontSize: state.isOvertime ||
+                                  (state.isStopwatch &&
+                                      state.elapsedSeconds >= 3600)
+                              ? 13.5
+                              : 16.0,
                           fontWeight: FontWeight.w700,
                           color: state.isOvertime
                               ? AppColors.overtime
-                              : Colors.white,
+                              : (state.isLife
+                                  ? AppColors.breakTime
+                                  : (isGolden
+                                      ? AppColors.golden
+                                      : Colors.white)),
                           fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                       const SizedBox(height: 2.0),
-                      Container(
-                        width: 4.5,
-                        height: 4.5,
-                        decoration: BoxDecoration(
-                          color: ringColor,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
+                      isGolden
+                          ? const Icon(
+                              Icons.star_rounded,
+                              size: 11,
+                              color: AppColors.golden,
+                            )
+                          : Container(
+                              width: 4.5,
+                              height: 4.5,
+                              decoration: BoxDecoration(
+                                color: ringColor,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
                     ],
                   ),
                 ],
@@ -255,46 +263,55 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
           ),
         );
 
-        // دکمه‌های کنترل نوار ابزار
-        final buttonFullscreen = _MiniCircleButton(
-          tooltip: 'داشبورد کامل',
-          icon: Icons.open_in_full_rounded,
-          onPressed: () {
-            provider.setWindowPosture(WindowPosture.dashboard);
-          },
+        // دکمه‌های کنترلی برای قرارگیری در هاله گرد دور ویجت (با اندازه بهینه و فشرده)
+        // ۱. یادداشت گزارش کار حین فعالیت (اولین گزینه منو - پنجره کاملاً مستقل)
+        final buttonWorkNote = _HaloButton(
+          tooltip: 'یادداشت گزارش کار حین فعالیت',
+          icon: Icons.edit_note_rounded,
+          activeColor: AppColors.focus,
+          onPressed: () => WorkNoteDialog.openStandalone(context),
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
         );
 
-        final buttonTune = _MiniCircleButton(
+        // ۲. تنظیمات و کوئیک‌شیت
+        final buttonTune = _HaloButton(
           tooltip: 'تنظیمات و تسک جاری',
           icon: provider.isQuickMenuExpanded
               ? Icons.expand_less_rounded
               : Icons.tune_rounded,
           isActive: provider.isQuickMenuExpanded,
           activeColor: AppColors.focus,
-          onPressed: () {
-            final next = !provider.isQuickMenuExpanded;
-            provider.toggleQuickMenuExpanded(next);
-            PlatformHelper.setFloatingWidgetHovered(
-              true,
-              buttonsOnRight: _buttonsOnRight,
-              isSheetExpanded: next,
-            );
-          },
+          onPressed: () =>
+              provider.toggleQuickMenuExpanded(!provider.isQuickMenuExpanded),
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
         );
 
-        final buttonPin = _MiniCircleButton(
-          tooltip: provider.isPinned
-              ? 'ویجت پین است (همیشه رو)'
-              : 'پین کردن ویجت (همیشه رو)',
-          icon: provider.isPinned
-              ? Icons.push_pin_rounded
-              : Icons.push_pin_outlined,
-          isActive: provider.isPinned,
-          activeColor: AppColors.focus,
-          onPressed: provider.togglePin,
+        // ۳. داشبورد کامل (جابه‌جاشده با یادداشت)
+        final buttonFullscreen = _HaloButton(
+          tooltip: 'داشبورد کامل',
+          icon: Icons.open_in_full_rounded,
+          onPressed: () => provider.setWindowPosture(WindowPosture.dashboard),
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
         );
 
-        final buttonStopwatch = _MiniCircleButton(
+        // ۴. دکمه ستاره طلایی (قابل فعال و غیرفعال‌سازی با کلیک)
+        final buttonGoldenStar = _HaloButton(
+          tooltip: isGolden
+              ? 'تسک طلایی فعال (مطابق برنامه)'
+              : 'فعال‌سازی تسک طلایی',
+          icon: Icons.star_rounded,
+          isActive: isGolden,
+          activeColor: AppColors.golden,
+          onPressed: () => provider.toggleGoldenScheduledTask(),
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
+        );
+
+        // ۵. کرنومتر و پومودورو
+        final buttonStopwatch = _HaloButton(
           tooltip: state.isStopwatch
               ? 'سوییچ به پومودورو'
               : 'سوییچ به کرنومتر آزاد',
@@ -304,73 +321,58 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
           isActive: state.isStopwatch,
           activeColor: AppColors.stopwatch,
           onPressed: provider.toggleClockType,
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
         );
 
-        // دکمه اصلی انتقال پیوسته قلمرو: کار ⇄ زندگی (استراحت)
-        // در این اپ چیزی به نام توقف وجود ندارد؛ پیوسته یا کار است یا زندگی
-        final buttonRealmAction = _RealmActionButton(
-          isWork: state.isWork,
-          ringColor: ringColor,
+        // ۶. پین روی صفحه
+        final buttonPin = _HaloButton(
+          tooltip: provider.isPinned
+              ? 'ویجت پین است (همیشه رو)'
+              : 'پین کردن ویجت (همیشه رو)',
+          icon: provider.isPinned
+              ? Icons.push_pin_rounded
+              : Icons.push_pin_outlined,
+          isActive: provider.isPinned,
+          activeColor: AppColors.focus,
+          onPressed: provider.togglePin,
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
+        );
+
+        // ۷. سوییچ کار و زندگی (استراحت)
+        // رنگ استراحت همیشه باید سبز باقی بماند
+        final buttonRealmAction = _HaloButton(
+          tooltip: state.isWork
+              ? 'ورود به وضعیت زندگی (استراحت)'
+              : 'پایان استراحت و شروع مجدد کار',
+          icon: state.isWork ? Icons.coffee_rounded : Icons.work_rounded,
+          iconColor: Colors.white,
+          backgroundColor: state.isWork
+              ? AppColors.breakTime // در حین کار، دکمه استراحت همیشه سبز است
+              : (isGolden ? AppColors.golden : AppColors.focus),
           onPressed: provider.toggleWorkLife,
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
         );
 
-        // چیدمان دکمه‌ها در LTR:
-        // حالت پیش‌فرض (سمت چپ دایره): [تمام‌صفحه, تنظیمات, پین, کرنومتر, دکمه کار/زندگی] -> مجاور دایره در سمت راست
-        // حالت لبه چپ (سمت راست دایره): [دکمه کار/زندگی, کرنومتر, پین, تنظیمات, تمام‌صفحه] -> مجاور دایره در سمت چپ
-        final List<Widget> buttonWidgets = _buttonsOnRight
-            ? [
-                buttonRealmAction,
-                const SizedBox(width: 5),
-                buttonStopwatch,
-                const SizedBox(width: 5),
-                buttonPin,
-                const SizedBox(width: 5),
-                buttonTune,
-                const SizedBox(width: 5),
-                buttonFullscreen,
-              ]
-            : [
-                buttonFullscreen,
-                const SizedBox(width: 5),
-                buttonTune,
-                const SizedBox(width: 5),
-                buttonPin,
-                const SizedBox(width: 5),
-                buttonStopwatch,
-                const SizedBox(width: 5),
-                buttonRealmAction,
-              ];
+        // لیست دکمه‌ها و زاویه کمان هاله (از چپ به راست روی نیم‌دایره بالا)
+        // زوایا به درجه نسبت به ساعت ۱۲ (بالا = ۰ درجه):
+        // چپ = -102°, بالا-چپ = -68°, بالا-چپ-مرکزی = -34°, بالا = 0°, بالا-راست-مرکزی = +34°, بالا-راست = +68°, راست = +102°
+        final List<({Widget widget, double angleDeg})> haloButtons = [
+          (widget: buttonWorkNote, angleDeg: -102.0),
+          (widget: buttonTune, angleDeg: -68.0),
+          (widget: buttonFullscreen, angleDeg: -34.0),
+          (widget: buttonGoldenStar, angleDeg: 0.0),
+          (widget: buttonStopwatch, angleDeg: 34.0),
+          (widget: buttonPin, angleDeg: 68.0),
+          (widget: buttonRealmAction, angleDeg: 102.0),
+        ];
 
-        // کپسول دکمه‌های کنترل
-        final buttonsCapsule = MouseRegion(
-          onEnter: (_) => _onMouseEnter(),
-          onExit: (_) => _onMouseExit(),
-          child: Container(
-            height: 44,
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFF18181B).withAlpha(245),
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(
-                color: Colors.white.withAlpha(25),
-                width: 1.0,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withAlpha(120),
-                  blurRadius: 12,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: buttonWidgets,
-            ),
-          ),
-        );
+        // شعاع هاله برای فاصله‌گیری دکمه‌ها از مرکز دایره
+        const double haloOrbitRadius = 55.0;
 
-        // کپسول نام تسک زیر دایره
+        // کپسول نام تسک زیر دایره ("تکه پایین هم می‌شود عنوان فعالیت")
         final taskCapsule = MouseRegion(
           onEnter: (_) => _onMouseEnter(),
           onExit: (_) => _onMouseExit(),
@@ -380,19 +382,21 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
               provider.toggleQuickMenuExpanded(!provider.isQuickMenuExpanded);
             },
             child: Container(
-              constraints: const BoxConstraints(maxWidth: 156),
+              constraints: const BoxConstraints(maxWidth: 165),
               padding:
-                  const EdgeInsets.symmetric(horizontal: 11, vertical: 4.0),
+                  const EdgeInsets.symmetric(horizontal: 11, vertical: 4.5),
               decoration: BoxDecoration(
                 color: const Color(0xFF18181B).withAlpha(245),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: Colors.white.withAlpha(25),
+                  color: isGolden
+                      ? AppColors.golden.withAlpha(120)
+                      : Colors.white.withAlpha(28),
                   width: 1.0,
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withAlpha(90),
+                    color: Colors.black.withAlpha(120),
                     blurRadius: 6,
                     offset: const Offset(0, 2),
                   ),
@@ -412,10 +416,12 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                         fontSize: 11.0,
                         fontWeight: FontWeight.w600,
                         color: state.isWork
-                            ? (provider.activeTaskLog?.isUntitledDraft == true
-                                ? AppColors.draftWarning
-                                : AppColors.textPrimary)
-                            : AppColors.breakTime,
+                          ? (isGolden
+                              ? AppColors.golden
+                              : (provider.activeTaskLog?.isUntitledDraft == true
+                                  ? AppColors.draftWarning
+                                  : AppColors.textPrimary))
+                          : AppColors.breakTime,
                       ),
                     ),
                   ),
@@ -447,54 +453,65 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
             body: Stack(
               clipBehavior: Clip.none,
               children: [
-                // ۱. کپسول دکمه‌های کنترل (اسلاید نرم از پشت دایره به چپ یا راست)
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 240),
-                  curve: Curves.easeOutCubic,
-                  top: 22,
-                  right: _buttonsOnRight
-                      ? null
-                      : (showFullMenu ? 110 : circleEdge),
-                  left: _buttonsOnRight
-                      ? (showFullMenu ? 110 : circleEdge)
-                      : null,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeOut,
-                    opacity: showFullMenu ? 1.0 : 0.0,
-                    child: IgnorePointer(
-                      ignoring: !showFullMenu,
-                      child: buttonsCapsule,
-                    ),
+                // ناحیه پیوسته حساس به هاور برای کل محدوده هاله، دایره و کپسول
+                // تا هنگام حرکت ماوس از دایره به روی دکمه‌ها یا بین آن‌ها هاور هرگز برداشته نشود
+                Positioned(
+                  top: centerY - (haloOrbitRadius + 18.0),
+                  left: centerX - (haloOrbitRadius + 22.0),
+                  width: (haloOrbitRadius + 22.0) * 2,
+                  height: (haloOrbitRadius + 18.0) * 2 + 30.0,
+                  child: MouseRegion(
+                    opaque: false,
+                    onEnter: (_) => _onMouseEnter(),
+                    onExit: (_) => _onMouseExit(),
                   ),
                 ),
 
-                // ۲. دایره تایمر اصلی (کاملاً ثابت و مهارشده در مختصات مطلق)
+                // ۱. دکمه‌های هاله گرد دور ویجت با اندازه بهینه و انیمیشن روان باز و بسته شدن
+                ...haloButtons.map((item) {
+                  final rad = item.angleDeg * (math.pi / 180.0);
+                  // مختصات نهایی روی هاله در حالت هاور (دکمه‌های ۲۶ پیکسلی با نیم‌شعاع ۱۳)
+                  final targetX = centerX + (haloOrbitRadius * math.sin(rad)) - 13.0;
+                  final targetY = centerY - (haloOrbitRadius * math.cos(rad)) - 13.0;
+
+                  // در حالت عدم هاور، دکمه‌ها در پشت مرکز دایره پنهان هستند
+                  final collapsedX = centerX - 13.0;
+                  final collapsedY = centerY - 13.0;
+
+                  return AnimatedPositioned(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    left: showFullMenu ? targetX : collapsedX,
+                    top: showFullMenu ? targetY : collapsedY,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 180),
+                      opacity: showFullMenu ? 1.0 : 0.0,
+                      child: IgnorePointer(
+                        ignoring: !showFullMenu,
+                        child: item.widget,
+                      ),
+                    ),
+                  );
+                }),
+
+                // ۲. دایره تایمر اصلی (کاملاً ثابت و مهارشده در مرکز)
                 Positioned(
-                  top: showFullMenu ? circleTop : 8,
-                  right: showFullMenu
-                      ? (_buttonsOnRight ? null : circleEdge)
-                      : null,
-                  left: showFullMenu
-                      ? (_buttonsOnRight ? circleEdge : null)
-                      : 8,
+                  top: centerY - (circleSize / 2.0),
+                  left: centerX - (circleSize / 2.0),
                   child: timerCircle,
                 ),
 
-                // ۳. کپسول نام تسک زیر دایره (دقیقاً زیر مرکز هندسی دایره هم‌تراز شده)
+                // ۳. کپسول نام تسک در زیر دایره
                 AnimatedPositioned(
-                  duration: const Duration(milliseconds: 240),
+                  duration: const Duration(milliseconds: 220),
                   curve: Curves.easeOutCubic,
-                  top: showFullMenu && !provider.isQuickMenuExpanded ? 84 : 55,
-                  right: _buttonsOnRight ? null : 0,
-                  left: _buttonsOnRight ? 0 : null,
-                  width: 156,
+                  top: showFullMenu && !provider.isQuickMenuExpanded ? (centerY + (circleSize / 2.0) + 7.0) : centerY,
+                  left: centerX - (165.0 / 2.0),
+                  width: 165,
                   child: AnimatedOpacity(
                     duration: const Duration(milliseconds: 180),
                     curve: Curves.easeOut,
-                    opacity: showFullMenu && !provider.isQuickMenuExpanded
-                        ? 1.0
-                        : 0.0,
+                    opacity: showFullMenu && !provider.isQuickMenuExpanded ? 1.0 : 0.0,
                     child: IgnorePointer(
                       ignoring: !showFullMenu || provider.isQuickMenuExpanded,
                       child: Center(child: taskCapsule),
@@ -519,95 +536,75 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
   }
 }
 
-/// دکمه اصلی سوییچ دوگانه «کار» و «زندگی»
-/// هیچ وقفه یا توقفی در کل سیستم وجود ندارد؛ فقط گذار از کار به زندگی یا بالعکس
-class _RealmActionButton extends StatelessWidget {
-  final bool isWork;
-  final Color ringColor;
-  final VoidCallback onPressed;
-
-  const _RealmActionButton({
-    required this.isWork,
-    required this.ringColor,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: isWork
-          ? 'وقفه / ورود به وضعیت زندگی (استراحت)'
-          : 'پایان استراحت و ورود به وضعیت کار',
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(17),
-          child: Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: ringColor,
-              boxShadow: [
-                BoxShadow(
-                  color: ringColor.withAlpha(110),
-                  blurRadius: 6,
-                  offset: const Offset(0, 1),
-                ),
-              ],
-            ),
-            child: Icon(
-              isWork ? Icons.coffee_rounded : Icons.work_rounded,
-              size: 18,
-              color: Colors.white,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniCircleButton extends StatelessWidget {
+/// دکمه دایره‌ای مدرن و بهینه‌شده برای قرارگیری در هاله گرد دور ویجت
+class _HaloButton extends StatelessWidget {
   final String tooltip;
   final IconData icon;
   final bool isActive;
   final Color? activeColor;
+  final Color? iconColor;
+  final Color? backgroundColor;
   final VoidCallback onPressed;
+  final VoidCallback? onMouseEnter;
+  final VoidCallback? onMouseExit;
 
-  const _MiniCircleButton({
+  const _HaloButton({
     required this.tooltip,
     required this.icon,
     this.isActive = false,
     this.activeColor,
+    this.iconColor,
+    this.backgroundColor,
     required this.onPressed,
+    this.onMouseEnter,
+    this.onMouseExit,
   });
 
   @override
   Widget build(BuildContext context) {
     final Color tint = activeColor ?? AppColors.focus;
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(15),
-          child: Container(
-            width: 29,
-            height: 29,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: isActive ? tint.withAlpha(50) : Colors.white.withAlpha(20),
-              border: isActive
-                  ? Border.all(color: tint.withAlpha(120), width: 1.0)
-                  : null,
-            ),
-            child: Icon(
-              icon,
-              size: 14.5,
-              color: isActive ? tint : AppColors.textSecondary,
+    final Color bg = backgroundColor ??
+        (isActive
+            ? tint.withAlpha(60)
+            : const Color(0xFF1E1E22).withAlpha(240));
+
+    final Color fg = iconColor ?? (isActive ? tint : AppColors.textPrimary);
+
+    return MouseRegion(
+      onEnter: (_) => onMouseEnter?.call(),
+      onExit: (_) => onMouseExit?.call(),
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(13),
+            child: Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: bg,
+                border: Border.all(
+                  color: isActive
+                      ? tint.withAlpha(150)
+                      : Colors.white.withAlpha(25),
+                  width: 0.9,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withAlpha(120),
+                    blurRadius: 5,
+                    offset: const Offset(0, 1.5),
+                  ),
+                ],
+              ),
+              child: Icon(
+                icon,
+                size: 13.0,
+                color: fg,
+              ),
             ),
           ),
         ),
@@ -628,13 +625,13 @@ class _CompactRingPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final radius = (size.width - 5) / 2;
+    final radius = (size.width - 4.5) / 2;
 
     // مسیر پس‌زمینه حلقه
     final trackPaint = Paint()
       ..color = ringColor.withAlpha(36)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.2;
+      ..strokeWidth = 3.0;
 
     canvas.drawCircle(center, radius, trackPaint);
 
@@ -645,7 +642,7 @@ class _CompactRingPainter extends CustomPainter {
       ..color = ringColor
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = 3.2;
+      ..strokeWidth = 3.0;
 
     final sweepAngle = 2 * math.pi * progress.clamp(0.0, 1.0);
     canvas.drawArc(

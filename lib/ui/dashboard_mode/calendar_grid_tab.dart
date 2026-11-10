@@ -13,8 +13,10 @@ import '../../models/scheduled_block.dart';
 import '../../models/task_log_entry.dart';
 import '../../providers/app_state_provider.dart';
 import '../shared/unified_project_selector.dart';
+import 'activity_log_tab.dart';
 
 enum CalendarViewSpan { day1, day3, day7 }
+enum CalendarDisplayMode { grid, timesheet }
 
 class CalendarGridTab extends StatefulWidget {
   const CalendarGridTab({super.key});
@@ -25,6 +27,7 @@ class CalendarGridTab extends StatefulWidget {
 
 class _CalendarGridTabState extends State<CalendarGridTab> {
   CalendarViewSpan _span = CalendarViewSpan.day7;
+  CalendarDisplayMode _calendarDisplayMode = CalendarDisplayMode.grid;
   DateTime _focusedDate = DateTime.now();
   final ScrollController _verticalScrollController = ScrollController();
   Timer? _minuteTicker;
@@ -761,60 +764,66 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           _buildCalendarToolbar(provider, displayedDays),
           const SizedBox(height: 10),
 
-          // ۲. هدر روزها (ثابت بالای اسکرولر)
-          _buildStickyDayHeaders(displayedDays),
+          if (_calendarDisplayMode == CalendarDisplayMode.timesheet)
+            const Expanded(
+              child: ActivityLogTab(),
+            )
+          else ...[
+            // ۲. هدر روزها (ثابت بالای اسکرولر)
+            _buildStickyDayHeaders(displayedDays),
 
-          // ۳. شبکه ساعت‌ها با امکان اسکرول همگام و زوم ماوس (Ctrl + Scroll)
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: const BorderRadius.vertical(
-                  bottom: Radius.circular(12),
+            // ۳. شبکه ساعت‌ها با امکان اسکرول همگام و زوم ماوس (Ctrl + Scroll)
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(12),
+                  ),
+                  border: Border.all(color: AppColors.border, width: 1.0),
                 ),
-                border: Border.all(color: AppColors.border, width: 1.0),
-              ),
-              child: Listener(
-                onPointerSignal: (pointerSignal) {
-                  // پشتیبانی از زوم روان با نگه داشتن کلید Ctrl و چرخ ماوس
-                  if (HardwareKeyboard.instance.isControlPressed &&
-                      pointerSignal is PointerScrollEvent) {
-                    final zoomDelta = -pointerSignal.scrollDelta.dy * 0.08;
-                    _changeZoom(zoomDelta);
-                  }
-                },
-                child: SingleChildScrollView(
-                  controller: _verticalScrollController,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // ستون ساعت‌ها (00:00 تا 23:00)
-                      _buildTimeAxisColumn(),
+                child: Listener(
+                  onPointerSignal: (pointerSignal) {
+                    // پشتیبانی از زوم روان با نگه داشتن کلید Ctrl و چرخ ماوس
+                    if (HardwareKeyboard.instance.isControlPressed &&
+                        pointerSignal is PointerScrollEvent) {
+                      final zoomDelta = -pointerSignal.scrollDelta.dy * 0.08;
+                      _changeZoom(zoomDelta);
+                    }
+                  },
+                  child: SingleChildScrollView(
+                    controller: _verticalScrollController,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // ستون ساعت‌ها (00:00 تا 23:00)
+                        _buildTimeAxisColumn(),
 
-                      const VerticalDivider(
-                        width: 1,
-                        thickness: 1,
-                        color: AppColors.border,
-                      ),
-
-                      // ستون‌های روزها
-                      Expanded(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: displayedDays.map((day) {
-                            return Expanded(
-                              child: _buildDayColumn(day, provider),
-                            );
-                          }).toList(),
+                        const VerticalDivider(
+                          width: 1,
+                          thickness: 1,
+                          color: AppColors.border,
                         ),
-                      ),
-                    ],
+
+                        // ستون‌های روزها
+                        Expanded(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: displayedDays.map((day) {
+                              return Expanded(
+                                child: _buildDayColumn(day, provider),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -838,30 +847,58 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           alignment: WrapAlignment.spaceBetween,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // سوییچر نماها: روزانه، ۳ روزه، هفتگی
-            SegmentedButton<CalendarViewSpan>(
-              showSelectedIcon: false,
+            // سوییچر حالت اصلی: نمای تقویم هوشمند / جدول تایم‌شیت و کارکرد
+            SegmentedButton<CalendarDisplayMode>(
+              showSelectedIcon: true,
               style: SegmentedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                textStyle: const TextStyle(fontSize: 11.5),
+                textStyle: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               segments: const [
                 ButtonSegment(
-                  value: CalendarViewSpan.day1,
-                  label: Text('روزانه (1D)'),
+                  value: CalendarDisplayMode.grid,
+                  icon: Icon(Icons.calendar_view_week_rounded, size: 16),
+                  label: Text('نمای تقویم'),
                 ),
                 ButtonSegment(
-                  value: CalendarViewSpan.day3,
-                  label: Text('۳ روزه (3D)'),
-                ),
-                ButtonSegment(
-                  value: CalendarViewSpan.day7,
-                  label: Text('هفتگی (7D)'),
+                  value: CalendarDisplayMode.timesheet,
+                  icon: Icon(Icons.table_chart_rounded, size: 16),
+                  label: Text('جدول تایم‌شیت و کارکرد'),
                 ),
               ],
-              selected: {_span},
-              onSelectionChanged: (set) => setState(() => _span = set.first),
+              selected: {_calendarDisplayMode},
+              onSelectionChanged: (set) =>
+                  setState(() => _calendarDisplayMode = set.first),
             ),
+
+            if (_calendarDisplayMode == CalendarDisplayMode.grid) ...[
+              // سوییچر نماها: روزانه، ۳ روزه، هفتگی
+              SegmentedButton<CalendarViewSpan>(
+                showSelectedIcon: false,
+                style: SegmentedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 11.5),
+                ),
+                segments: const [
+                  ButtonSegment(
+                    value: CalendarViewSpan.day1,
+                    label: Text('روزانه (1D)'),
+                  ),
+                  ButtonSegment(
+                    value: CalendarViewSpan.day3,
+                    label: Text('۳ روزه (3D)'),
+                  ),
+                  ButtonSegment(
+                    value: CalendarViewSpan.day7,
+                    label: Text('هفتگی (7D)'),
+                  ),
+                ],
+                selected: {_span},
+                onSelectionChanged: (set) => setState(() => _span = set.first),
+              ),
 
             // ناوبری بازه زمانی و عنوان تاریخ شمسی
             Row(
@@ -1021,6 +1058,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                 ),
               ],
             ),
+            ],
           ],
         ),
       ),
@@ -1180,7 +1218,11 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final colWidth = constraints.maxWidth;
-        final subColWidth = ((colWidth - 8) / 2).clamp(40.0, 400.0);
+        // تقسیم دقیق ستون روز به دو لاین مجزا بدون همپوشانی: عملکرد واقعی (چپ) و برنامه‌ریزی (راست)
+        final double halfLaneWidth =
+            ((colWidth - 5.0) / 2.0).clamp(16.0, 500.0);
+        final double actualLaneLeft = 1.5;
+        final double plannedLaneLeft = (colWidth / 2.0) + 1.0;
 
         return Container(
           decoration: BoxDecoration(
@@ -1206,8 +1248,19 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
             child: SizedBox(
               height: 24 * _hourHeight,
               child: Stack(
-                clipBehavior: Clip.none,
+                clipBehavior: Clip.hardEdge,
                 children: [
+                  // خط جداکننده محو بین لاین عملکرد و برنامه‌ریزی
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    left: colWidth / 2.0,
+                    width: 0.8,
+                    child: Container(
+                      color: Colors.white.withAlpha(10),
+                    ),
+                  ),
+
                   // خطوط افقی ساعت‌ها و نیم‌ساعت‌ها
                   ...List.generate(24, (hour) {
                     final top = hour * _hourHeight;
@@ -1263,12 +1316,25 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   // ۱. لاین برنامه‌ریزی (Planned Blocks) - سمت راست ستون
                   ...plannedBlocks.map((b) {
                     final isThisActive = _activeDragId == b.id;
-                    final double baseTop = (b.startTime.hour * _hourHeight) +
-                        (b.startTime.minute * _hourHeight / 60.0);
-                    final double durationMins =
-                        (b.plannedDurationSeconds / 60.0).clamp(5.0, 1440.0);
+                    final effectiveStart =
+                        b.startTime.isBefore(dayStart) ? dayStart : b.startTime;
+                    final effectiveEnd =
+                        b.endTime.isAfter(dayEnd) ? dayEnd : b.endTime;
+
+                    if (!effectiveEnd.isAfter(effectiveStart)) {
+                      return const SizedBox.shrink();
+                    }
+
+                    final double baseTop = (effectiveStart.hour * _hourHeight) +
+                        (effectiveStart.minute * _hourHeight / 60.0) +
+                        (effectiveStart.second * _hourHeight / 3600.0);
+                    final double durationMins = (effectiveEnd
+                                .difference(effectiveStart)
+                                .inSeconds /
+                            60.0)
+                        .clamp(4.0, 1440.0);
                     final double baseHeight =
-                        (durationMins * _hourHeight / 60.0).clamp(24.0, 1440.0);
+                        (durationMins * _hourHeight / 60.0).clamp(20.0, 24 * _hourHeight);
 
                     double renderedTop = baseTop;
                     double renderedHeight = baseHeight;
@@ -1276,11 +1342,11 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     if (isThisActive) {
                       if (_isResizingBottom) {
                         renderedHeight =
-                            (baseHeight + _dragAccumulatedDy).clamp(24.0, 1440.0);
+                            (baseHeight + _dragAccumulatedDy).clamp(20.0, 24 * _hourHeight);
                       } else if (_isResizingTop) {
                         renderedTop = (baseTop + _dragAccumulatedDy).clamp(0.0, 24 * _hourHeight);
                         renderedHeight =
-                            (baseHeight - _dragAccumulatedDy).clamp(24.0, 1440.0);
+                            (baseHeight - _dragAccumulatedDy).clamp(20.0, 24 * _hourHeight);
                       } else {
                         renderedTop = (baseTop + _dragAccumulatedDy).clamp(0.0, 24 * _hourHeight);
                       }
@@ -1298,14 +1364,14 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
 
                     return Positioned(
                       top: renderedTop,
-                      right: 2,
-                      width: subColWidth,
+                      left: plannedLaneLeft,
+                      width: halfLaneWidth,
                       height: renderedHeight,
                       child: _InteractiveCalendarBlock(
                         id: b.id,
                         title: b.title,
-                        startTime: b.startTime,
-                        endTime: b.endTime,
+                        startTime: effectiveStart,
+                        endTime: effectiveEnd,
                         color: pColor,
                         isPlanned: true,
                         height: renderedHeight,
@@ -1377,12 +1443,27 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   // ۲. لاین عملکرد واقعی (Actual Task Logs) - سمت چپ ستون
                   ...actualLogs.map((l) {
                     final isThisActive = _activeDragId == l.id;
-                    final double baseTop = (l.startTime.hour * _hourHeight) +
-                        (l.startTime.minute * _hourHeight / 60.0);
-                    final double durationMins =
-                        (l.durationSeconds / 60.0).clamp(5.0, 1440.0);
+                    final fullEnd = l.endTime ??
+                        l.startTime.add(Duration(seconds: l.durationSeconds));
+                    final effectiveStart =
+                        l.startTime.isBefore(dayStart) ? dayStart : l.startTime;
+                    final effectiveEnd =
+                        fullEnd.isAfter(dayEnd) ? dayEnd : fullEnd;
+
+                    if (!effectiveEnd.isAfter(effectiveStart)) {
+                      return const SizedBox.shrink();
+                    }
+
+                    final double baseTop = (effectiveStart.hour * _hourHeight) +
+                        (effectiveStart.minute * _hourHeight / 60.0) +
+                        (effectiveStart.second * _hourHeight / 3600.0);
+                    final double durationMins = (effectiveEnd
+                                .difference(effectiveStart)
+                                .inSeconds /
+                            60.0)
+                        .clamp(4.0, 1440.0);
                     final double baseHeight =
-                        (durationMins * _hourHeight / 60.0).clamp(24.0, 1440.0);
+                        (durationMins * _hourHeight / 60.0).clamp(20.0, 24 * _hourHeight);
 
                     double renderedTop = baseTop;
                     double renderedHeight = baseHeight;
@@ -1390,7 +1471,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     if (isThisActive) {
                       if (_isResizingBottom) {
                         renderedHeight =
-                            (baseHeight + _dragAccumulatedDy).clamp(24.0, 1440.0);
+                            (baseHeight + _dragAccumulatedDy).clamp(20.0, 24 * _hourHeight);
                       } else {
                         renderedTop = (baseTop + _dragAccumulatedDy).clamp(0.0, 24 * _hourHeight);
                       }
@@ -1413,14 +1494,14 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
 
                     return Positioned(
                       top: renderedTop,
-                      left: 2,
-                      width: subColWidth,
+                      left: actualLaneLeft,
+                      width: halfLaneWidth,
                       height: renderedHeight,
                       child: _InteractiveCalendarBlock(
                         id: l.id,
                         title: l.title.isEmpty ? 'تسک بدون عنوان' : l.title,
-                        startTime: l.startTime,
-                        endTime: l.endTime ?? l.startTime.add(Duration(seconds: l.durationSeconds)),
+                        startTime: effectiveStart,
+                        endTime: effectiveEnd,
                         color: col,
                         isPlanned: false,
                         isManual: isManual,
@@ -1588,7 +1669,7 @@ class _InteractiveCalendarBlock extends StatelessWidget {
                     borderRadius: BorderRadius.circular(5),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 5, vertical: 2),
+                          horizontal: 3.5, vertical: 2),
                       child: _buildAdaptiveContent(timeStr),
                     ),
                   ),
@@ -1630,123 +1711,160 @@ class _InteractiveCalendarBlock extends StatelessWidget {
     );
   }
 
-  /// چینش هوشمند محتوا با توجه به ارتفاع در دسترس جهت جلوگیری قطعی از Overflow
+  /// چینش هوشمند محتوا با توجه به عرض و ارتفاع در دسترس جهت جلوگیری قطعی از Overflow
   Widget _buildAdaptiveContent(String timeStr) {
     final textColor = isPlanned ? color : Colors.white;
 
-    if (height < 28.0) {
-      // تسک‌های بسیار کوتاه (کمتر از ۲۸ پیکسل): فقط یک ردیف فشرده
-      return Row(
-        children: [
-          _buildLeadingIcon(size: 9),
-          const SizedBox(width: 3),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 9.0,
-                fontWeight: FontWeight.bold,
-                color: textColor,
-              ),
-            ),
-          ),
-          if (isManual) ...[
-            const SizedBox(width: 2),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 0.5),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.maxWidth;
+        final isVeryNarrow = availableWidth < 52.0;
+        final canShowManualBadge = availableWidth >= 66.0;
+
+        // ویجت برچسب دستی: در صورت باریک بودن ستون نقطه کهربایی، در صورت داشتن فضا برچسب متنی
+        Widget? manualBadgeWidget;
+        if (isManual) {
+          if (canShowManualBadge) {
+            manualBadgeWidget = Container(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
               decoration: BoxDecoration(
                 color: AppColors.draftWarning.withAlpha(60),
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(3),
               ),
-              child: const Text('دستی',
-                  style: TextStyle(fontSize: 7.5, color: Colors.white)),
-            ),
-          ],
-        ],
-      );
-    } else if (height < 46.0) {
-      // تسک‌های متوسط (۲۸ تا ۴۶ پیکسل): عنوان و زمان در یک ردیف
-      return Row(
-        children: [
-          _buildLeadingIcon(size: 11),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 10.0,
-                fontWeight: FontWeight.bold,
-                color: textColor,
+              child: const Text(
+                'دستی',
+                style: TextStyle(
+                  fontSize: 7.5,
+                  color: AppColors.draftWarning,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-          ),
-          const SizedBox(width: 3),
-          Text(
-            intl.DateFormat('HH:mm').format(startTime),
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 8.5,
-              color: isPlanned ? AppColors.textMuted : Colors.white70,
-            ),
-          ),
-        ],
-      );
-    } else {
-      // تسک‌های کامل (بیشتر از ۴۶ پیکسل): چینش کامل دوخطی
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
+            );
+          } else {
+            manualBadgeWidget = Container(
+              width: 5,
+              height: 5,
+              decoration: const BoxDecoration(
+                color: AppColors.draftWarning,
+                shape: BoxShape.circle,
+              ),
+            );
+          }
+        }
+
+        if (height < 28.0) {
+          // تسک‌های بسیار کوتاه (کمتر از ۲۸ پیکسل): فقط یک ردیف فشرده
+          return Row(
             children: [
-              _buildLeadingIcon(size: 11),
-              const SizedBox(width: 4),
+              _buildLeadingIcon(size: 9),
+              const SizedBox(width: 2),
               Expanded(
                 child: Text(
                   title,
-                  maxLines: height > 70 ? 2 : 1,
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 10.5,
+                    fontSize: 8.5,
                     fontWeight: FontWeight.bold,
                     color: textColor,
                   ),
                 ),
               ),
-              if (isManual) ...[
-                const SizedBox(width: 3),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: AppColors.draftWarning.withAlpha(50),
-                    borderRadius: BorderRadius.circular(3),
+              if (manualBadgeWidget != null) ...[
+                const SizedBox(width: 2),
+                manualBadgeWidget,
+              ],
+            ],
+          );
+        } else if (height < 46.0) {
+          // تسک‌های متوسط (۲۸ تا ۴۶ پیکسل): عنوان و زمان در یک ردیف
+          return Row(
+            children: [
+              _buildLeadingIcon(size: 10),
+              const SizedBox(width: 3),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.bold,
+                    color: textColor,
                   ),
-                  child: const Text('دستی',
-                      style: TextStyle(
-                          fontSize: 8.0,
-                          color: AppColors.draftWarning,
-                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+              if (manualBadgeWidget != null) ...[
+                const SizedBox(width: 2),
+                manualBadgeWidget,
+              ],
+              if (!isVeryNarrow) ...[
+                const SizedBox(width: 3),
+                Flexible(
+                  fit: FlexFit.loose,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      intl.DateFormat('HH:mm').format(startTime),
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 8.0,
+                        color: isPlanned ? AppColors.textMuted : Colors.white70,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ],
-          ),
-          const SizedBox(height: 1.5),
-          Text(
-            timeStr,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 8.5,
-              color: isPlanned ? AppColors.textMuted : Colors.white70,
-            ),
-          ),
-        ],
-      );
-    }
+          );
+        } else {
+          // تسک‌های کامل (بیشتر از ۴۶ پیکسل): چینش دوخطی بدون سرریز
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  _buildLeadingIcon(size: 10),
+                  const SizedBox(width: 3),
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: height > 70 ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.bold,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+                  if (manualBadgeWidget != null) ...[
+                    const SizedBox(width: 2),
+                    manualBadgeWidget,
+                  ],
+                ],
+              ),
+              const SizedBox(height: 1.5),
+              Flexible(
+                fit: FlexFit.loose,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    timeStr,
+                    maxLines: 1,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 8.5,
+                      color: isPlanned ? AppColors.textMuted : Colors.white70,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+      },
+    );
   }
 
   Widget _buildLeadingIcon({required double size}) {

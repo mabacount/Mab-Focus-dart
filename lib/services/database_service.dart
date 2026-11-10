@@ -8,6 +8,7 @@ import '../models/phase_tag.dart';
 import '../models/task_log_entry.dart';
 import '../models/scheduled_block.dart';
 import '../models/music_track.dart';
+import '../models/work_note_entry.dart';
 
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._init();
@@ -40,12 +41,14 @@ class DatabaseService {
       dbPath = p.join(databasesPath, filePath);
     }
 
-    return await openDatabase(
+    final db = await openDatabase(
       dbPath,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
+    await _ensureWorkNotesTable(db);
+    return db;
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -133,7 +136,22 @@ class DatabaseService {
       )
     ''');
 
+    await _ensureWorkNotesTable(db);
     await _seedDefaultPhaseTags(db);
+  }
+
+  Future<void> _ensureWorkNotesTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS work_notes (
+        id TEXT PRIMARY KEY,
+        task_log_id TEXT NULL,
+        project_id TEXT NULL,
+        task_title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        image_paths_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      )
+    ''');
   }
 
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
@@ -452,6 +470,39 @@ class DatabaseService {
       return maps.first['value'] as String;
     }
     return defaultValue;
+  }
+
+  // ==================== یادداشت‌های گزارش کار حین فعالیت ====================
+
+  Future<void> insertWorkNote(WorkNoteEntry note) async {
+    final db = await database;
+    await db.insert(
+      'work_notes',
+      note.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<List<WorkNoteEntry>> getAllWorkNotes() async {
+    final db = await database;
+    final maps = await db.query('work_notes', orderBy: 'created_at DESC');
+    return maps.map((e) => WorkNoteEntry.fromMap(e)).toList();
+  }
+
+  Future<List<WorkNoteEntry>> getWorkNotesForTask(String taskLogId) async {
+    final db = await database;
+    final maps = await db.query(
+      'work_notes',
+      where: 'task_log_id = ?',
+      whereArgs: [taskLogId],
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((e) => WorkNoteEntry.fromMap(e)).toList();
+  }
+
+  Future<void> deleteWorkNote(String id) async {
+    final db = await database;
+    await db.delete('work_notes', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<void> close() async {
