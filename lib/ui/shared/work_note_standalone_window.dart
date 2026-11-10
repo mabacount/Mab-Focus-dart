@@ -13,12 +13,15 @@ import 'package:window_manager/window_manager.dart';
 
 import '../../core/constants.dart';
 import '../../core/jalali_date.dart';
-import '../../models/work_note_entry.dart';
+import '../../models/pomodoro_state.dart';
+import '../../models/session_note.dart';
 import '../../services/database_service.dart';
 
 class WorkNoteStandaloneApp extends StatelessWidget {
   final WindowController windowController;
-  final String? taskLogId;
+  final AppRealm realm;
+  final String? timeRecordId;
+  final String? outcomeId;
   final String? projectId;
   final String taskTitle;
   final String? projectName;
@@ -27,7 +30,9 @@ class WorkNoteStandaloneApp extends StatelessWidget {
   const WorkNoteStandaloneApp({
     super.key,
     required this.windowController,
-    this.taskLogId,
+    this.realm = AppRealm.work,
+    this.timeRecordId,
+    this.outcomeId,
     this.projectId,
     required this.taskTitle,
     this.projectName,
@@ -40,7 +45,7 @@ class WorkNoteStandaloneApp extends StatelessWidget {
         GoogleFonts.vazirmatnTextTheme(ThemeData.dark().textTheme);
 
     return MaterialApp(
-      title: 'یادداشت گزارش کار',
+      title: 'یادداشت حین فعالیت',
       debugShowCheckedModeBanner: false,
       locale: const Locale('fa', 'IR'),
       supportedLocales: const [
@@ -58,7 +63,9 @@ class WorkNoteStandaloneApp extends StatelessWidget {
       ),
       home: WorkNoteStandaloneView(
         windowController: windowController,
-        taskLogId: taskLogId,
+        realm: realm,
+        timeRecordId: timeRecordId,
+        outcomeId: outcomeId,
         projectId: projectId,
         taskTitle: taskTitle,
         projectName: projectName,
@@ -70,7 +77,9 @@ class WorkNoteStandaloneApp extends StatelessWidget {
 
 class WorkNoteStandaloneView extends StatefulWidget {
   final WindowController windowController;
-  final String? taskLogId;
+  final AppRealm realm;
+  final String? timeRecordId;
+  final String? outcomeId;
   final String? projectId;
   final String taskTitle;
   final String? projectName;
@@ -79,7 +88,9 @@ class WorkNoteStandaloneView extends StatefulWidget {
   const WorkNoteStandaloneView({
     super.key,
     required this.windowController,
-    this.taskLogId,
+    this.realm = AppRealm.work,
+    this.timeRecordId,
+    this.outcomeId,
     this.projectId,
     required this.taskTitle,
     this.projectName,
@@ -93,6 +104,7 @@ class WorkNoteStandaloneView extends StatefulWidget {
 class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
   final TextEditingController _contentController = TextEditingController();
   final List<String> _attachedImagePaths = [];
+  SessionNoteType _noteType = SessionNoteType.report;
   bool _isSaving = false;
 
   @override
@@ -104,7 +116,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
   Future<void> _initSubWindow() async {
     await windowManager.ensureInitialized();
     const windowOptions = WindowOptions(
-      size: Size(430, 520),
+      size: Size(450, 560),
       center: true,
       backgroundColor: Colors.transparent,
       skipTaskbar: false,
@@ -156,7 +168,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
             const SnackBar(
               content: Text('تصویر از کلیپ‌بورد الصاق شد.'),
               duration: Duration(seconds: 2),
-              backgroundColor: AppColors.breakTime,
+              backgroundColor: AppColors.lifeGreen,
             ),
           );
         }
@@ -188,7 +200,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
               SnackBar(
                 content: Text('$added فایل تصویر از کلیپ‌بورد الصاق شد.'),
                 duration: const Duration(seconds: 2),
-                backgroundColor: AppColors.breakTime,
+                backgroundColor: AppColors.lifeGreen,
               ),
             );
           }
@@ -200,7 +212,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'تصویری در کلیپ‌بورد یافت نشد. می‌توانید با دکمه انتخاب فایل تصویر را بارگذاری کنید.'),
+                'تصویری در کلیپ‌بورد یافت نشد. می‌توانید با دکمه انتخاب عکس استفاده کنید.'),
             duration: Duration(seconds: 2),
           ),
         );
@@ -260,17 +272,19 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
 
     try {
       final now = DateTime.now();
-      final note = WorkNoteEntry(
+      final note = SessionNote(
         id: const Uuid().v4(),
-        taskLogId: widget.taskLogId,
+        realm: widget.realm,
+        noteType: _noteType,
+        timeRecordId: widget.timeRecordId,
+        outcomeId: widget.outcomeId,
         projectId: widget.projectId,
-        taskTitle: widget.taskTitle,
         content: text,
-        imagePaths: _attachedImagePaths,
+        imagePaths: List.from(_attachedImagePaths),
         createdAt: now,
       );
 
-      await DatabaseService.instance.insertWorkNote(note);
+      await DatabaseService.instance.insertSessionNote(note);
 
       // اطلاع‌رسانی به پنجره اصلی جهت رفرش لیست
       try {
@@ -278,7 +292,6 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
         await syncChannel.invokeMethod('note_added');
       } catch (_) {}
 
-      // بستن پنجره مستقل
       await windowManager.close();
     } catch (e) {
       if (mounted) {
@@ -295,6 +308,9 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
 
   @override
   Widget build(BuildContext context) {
+    final realmColor = widget.realm == AppRealm.life
+        ? AppColors.lifeGreen
+        : AppColors.workBlue;
     final now = DateTime.now();
     final timeStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
@@ -315,7 +331,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.border, width: 1.2),
+                border: Border.all(color: realmColor.withAlpha(110), width: 1.2),
                 boxShadow: const [
                   BoxShadow(
                     color: Colors.black87,
@@ -330,7 +346,6 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // هدر پنجره با قابلیت درگ آزادانه
                     GestureDetector(
                       behavior: HitTestBehavior.translucent,
                       onPanStart: (_) => windowManager.startDragging(),
@@ -341,12 +356,12 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                             Container(
                               padding: const EdgeInsets.all(7),
                               decoration: BoxDecoration(
-                                color: AppColors.focus.withAlpha(30),
+                                color: realmColor.withAlpha(30),
                                 shape: BoxShape.circle,
                               ),
-                              child: const Icon(
+                              child: Icon(
                                 Icons.edit_note_rounded,
-                                color: AppColors.focus,
+                                color: realmColor,
                                 size: 20,
                               ),
                             ),
@@ -355,9 +370,9 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text(
-                                    'یادداشت گزارش کار حین فعالیت',
-                                    style: TextStyle(
+                                  Text(
+                                    'یادداشت حین فعالیت (${widget.realm.labelFa})',
+                                    style: const TextStyle(
                                       fontSize: 14,
                                       fontWeight: FontWeight.bold,
                                       color: Colors.white,
@@ -391,7 +406,6 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                     ),
                     const SizedBox(height: 12),
 
-                    // محتوای میانی اسکرول‌پذیر
                     Flexible(
                       child: SingleChildScrollView(
                         physics: const BouncingScrollPhysics(),
@@ -399,7 +413,6 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            // کپسول تسک جاری
                             Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 10, vertical: 6),
@@ -410,8 +423,8 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                               ),
                               child: Row(
                                 children: [
-                                  const Icon(Icons.task_alt_rounded,
-                                      size: 14, color: AppColors.focus),
+                                  Icon(Icons.link_rounded,
+                                      size: 14, color: realmColor),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
@@ -436,7 +449,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                                     .projectColorHex!
                                                     .replaceFirst('#', '0xFF')))
                                                 .withAlpha(40)
-                                            : AppColors.focus.withAlpha(40),
+                                            : realmColor.withAlpha(40),
                                         borderRadius: BorderRadius.circular(4),
                                       ),
                                       child: Text(
@@ -447,7 +460,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                               ? Color(int.parse(widget
                                                   .projectColorHex!
                                                   .replaceFirst('#', '0xFF')))
-                                              : AppColors.focus,
+                                              : realmColor,
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
@@ -458,7 +471,34 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                             ),
                             const SizedBox(height: 10),
 
-                            // فیلد متنی چندخطی
+                            // نوع یادداشت
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: SessionNoteType.values.map((t) {
+                                final isSelected = _noteType == t;
+                                return ChoiceChip(
+                                  avatar: Icon(t.icon,
+                                      size: 13,
+                                      color:
+                                          isSelected ? Colors.white : t.color),
+                                  label: Text(t.labelFa,
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: isSelected
+                                              ? Colors.white
+                                              : AppColors.textPrimary)),
+                                  selected: isSelected,
+                                  selectedColor: t.color,
+                                  backgroundColor: AppColors.surfaceElevated,
+                                  visualDensity: VisualDensity.compact,
+                                  onSelected: (_) =>
+                                      setState(() => _noteType = t),
+                                );
+                              }).toList(),
+                            ),
+                            const SizedBox(height: 10),
+
                             TextField(
                               controller: _contentController,
                               maxLines: 4,
@@ -467,7 +507,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                   fontSize: 13, color: Colors.white),
                               decoration: InputDecoration(
                                 hintText:
-                                    'الان چیکار کردیم، در چه وضعیتی هستیم یا قراره چیکار کنیم...',
+                                    'برنامه، چالش، گزارش پیشرفت یا ایده لحظه‌ای را بنویسید...',
                                 hintStyle: const TextStyle(
                                     fontSize: 12, color: AppColors.textMuted),
                                 filled: true,
@@ -479,15 +519,13 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                 ),
                                 focusedBorder: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.focus),
+                                  borderSide: BorderSide(color: realmColor),
                                 ),
                                 contentPadding: const EdgeInsets.all(12),
                               ),
                             ),
                             const SizedBox(height: 10),
 
-                            // دکمه‌های الصاق عکس
                             Wrap(
                               spacing: 8,
                               runSpacing: 6,
@@ -495,13 +533,13 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                 OutlinedButton.icon(
                                   style: OutlinedButton.styleFrom(
                                     visualDensity: VisualDensity.compact,
-                                    side:
-                                        const BorderSide(color: AppColors.border),
+                                    side: const BorderSide(
+                                        color: AppColors.border),
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 10, vertical: 6),
                                   ),
-                                  icon: const Icon(Icons.paste_rounded,
-                                      size: 15, color: AppColors.focus),
+                                  icon: Icon(Icons.paste_rounded,
+                                      size: 15, color: realmColor),
                                   label: const Text('الصاق تصویر (Ctrl+V)',
                                       style: TextStyle(fontSize: 11)),
                                   onPressed: _pasteFromClipboard,
@@ -509,8 +547,8 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                 OutlinedButton.icon(
                                   style: OutlinedButton.styleFrom(
                                     visualDensity: VisualDensity.compact,
-                                    side:
-                                        const BorderSide(color: AppColors.border),
+                                    side: const BorderSide(
+                                        color: AppColors.border),
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 10, vertical: 6),
                                   ),
@@ -524,7 +562,6 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                             ),
                             const SizedBox(height: 8),
 
-                            // پیش‌نمایش عکس‌های الصاق‌شده
                             if (_attachedImagePaths.isNotEmpty)
                               SizedBox(
                                 height: 72,
@@ -563,7 +600,8 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                           child: InkWell(
                                             onTap: () {
                                               setState(() {
-                                                _attachedImagePaths.removeAt(idx);
+                                                _attachedImagePaths
+                                                    .removeAt(idx);
                                               });
                                             },
                                             child: Container(
@@ -591,7 +629,6 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
 
                     const SizedBox(height: 12),
 
-                    // دکمه‌های تایید و انصراف
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
@@ -604,7 +641,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                         const SizedBox(width: 8),
                         FilledButton.icon(
                           style: FilledButton.styleFrom(
-                            backgroundColor: AppColors.focus,
+                            backgroundColor: realmColor,
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 14, vertical: 8),
                           ),
@@ -616,7 +653,7 @@ class _WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView> {
                                       strokeWidth: 2, color: Colors.white),
                                 )
                               : const Icon(Icons.check_rounded, size: 16),
-                          label: const Text('ثبت گزارش کار',
+                          label: const Text('ثبت یادداشت',
                               style: TextStyle(
                                   fontSize: 12, fontWeight: FontWeight.bold)),
                           onPressed: _isSaving ? null : _saveNote,

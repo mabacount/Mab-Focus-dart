@@ -5,11 +5,15 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import '../core/constants.dart';
 import '../core/jalali_date.dart';
-import '../models/project_node.dart';
+import '../models/outcome_item.dart';
 import '../models/phase_tag.dart';
-import '../models/task_log_entry.dart';
-import '../models/work_note_entry.dart';
+import '../models/pomodoro_state.dart';
+import '../models/project_node.dart';
+import '../models/session_note.dart';
+import '../models/time_record.dart';
+import 'database_service.dart';
 
 class ExcelExportService {
   static final ExcelExportService instance = ExcelExportService._init();
@@ -17,7 +21,8 @@ class ExcelExportService {
   ExcelExportService._init();
 
   Future<String?> exportTimesheetToExcel({
-    required List<TaskLogEntry> logs,
+    required List<TimeRecord> records,
+    required List<OutcomeItem> outcomes,
     required List<ProjectNode> projects,
     required List<PhaseTag> tags,
   }) async {
@@ -29,65 +34,55 @@ class ExcelExportService {
       excel.delete('Sheet1');
     }
 
-    final Map<String, ProjectNode> projectMap = {
-      for (final p in projects) p.id: p
+    final Map<String, OutcomeItem> outcomeMap = {
+      for (final o in outcomes) o.id: o
     };
     final Map<String, PhaseTag> tagMap = {for (final t in tags) t.id: t};
 
-    // سرستون‌های ۱۵‌گانه استاندارد ممیزی و ظرفیت
+    // سرستون‌های ۱۶‌گانه استاندارد ممیزی و ظرفیت نسخه ۴
     sheet.appendRow([
       TextCellValue('ردیف'),
       TextCellValue('تاریخ'),
-      TextCellValue('عنوان تسک / فعالیت'),
-      TextCellValue('نوع رکورد'),
-      TextCellValue('پروژه کلان'),
-      TextCellValue('پروژه زیرمجموعه'),
+      TextCellValue('قلمرو (Work/Life)'),
+      TextCellValue('عنوان کار / فعالیت'),
+      TextCellValue('حالت زمان‌سنج'),
+      TextCellValue('مسیر درختی پروژه'),
       TextCellValue('تگ‌های فاز کاری'),
       TextCellValue('ساعت شروع'),
       TextCellValue('ساعت پایان'),
       TextCellValue('مدت نهایی (دقیقه)'),
-      TextCellValue('اضافه‌کاری منفی (دقیقه)'),
+      TextCellValue('اضافه‌زمان / Overtime (دقیقه)'),
+      TextCellValue('استراحت استحقاقی کسب‌شده (دقیقه)'),
       TextCellValue('وضعیت ممیزی زمان'),
       TextCellValue('مدت اولیه قبل از ویرایش (دقیقه)'),
       TextCellValue('توضیحات ویرایش'),
-      TextCellValue('شناسه گروه هدف (Group ID)'),
+      TextCellValue('شناسه کار (Outcome ID)'),
     ]);
 
     final dateFormat = DateFormat('yyyy-MM-dd');
     final timeFormat = DateFormat('HH:mm:ss');
 
-    for (int i = 0; i < logs.length; i++) {
-      final entry = logs[i];
-      final macroName = entry.macroProjectId != null
-          ? (projectMap[entry.macroProjectId]?.name ?? '-')
-          : '-';
-      final subName = entry.subProjectId != null
-          ? (projectMap[entry.subProjectId]?.name ?? '-')
-          : '-';
+    for (int i = 0; i < records.length; i++) {
+      final entry = records[i];
+      final breadcrumb =
+          DatabaseService.getProjectBreadcrumb(entry.projectId, projects)
+              .map((e) => e.name)
+              .join(' > ');
+      final projectPath = breadcrumb.isEmpty ? '-' : breadcrumb;
       final tagNames = entry.tagIds
           .map((id) => tagMap[id]?.name)
           .whereType<String>()
           .join('، ');
-
-      String typeLabel;
-      switch (entry.entryType) {
-        case 'short_break':
-          typeLabel = 'استراحت کوتاه';
-          break;
-        case 'long_break':
-          typeLabel = 'استراحت طولانی (زندگی)';
-          break;
-        case 'stopwatch':
-          typeLabel = 'کرنومتر آزاد';
-          break;
-        default:
-          typeLabel = 'کارکرد تمرکز';
-      }
+      final resolvedTitle = entry.outcomeId != null
+          ? (outcomeMap[entry.outcomeId]?.title ?? entry.titleSnapshot)
+          : entry.titleSnapshot;
 
       final double finalMin =
           double.parse((entry.durationSeconds / 60.0).toStringAsFixed(2));
       final double overtimeMin =
           double.parse((entry.overtimeSeconds / 60.0).toStringAsFixed(2));
+      final double earnedBreakMin =
+          double.parse((entry.earnedBreakSeconds / 60.0).toStringAsFixed(2));
       final String auditStatus =
           entry.isEdited ? 'ویرایش‌شده [Edited]' : 'ثبت اصلی (Original)';
       final String origMin =
@@ -98,10 +93,10 @@ class ExcelExportService {
       sheet.appendRow([
         IntCellValue(i + 1),
         TextCellValue(dateFormat.format(entry.startTime.toLocal())),
-        TextCellValue(entry.title),
-        TextCellValue(typeLabel),
-        TextCellValue(macroName),
-        TextCellValue(subName),
+        TextCellValue(entry.realm.labelFa),
+        TextCellValue(resolvedTitle),
+        TextCellValue(entry.clockMode.labelFa),
+        TextCellValue(projectPath),
         TextCellValue(tagNames.isEmpty ? '-' : tagNames),
         TextCellValue(timeFormat.format(entry.startTime.toLocal())),
         TextCellValue(entry.endTime != null
@@ -109,10 +104,11 @@ class ExcelExportService {
             : '-'),
         DoubleCellValue(finalMin),
         DoubleCellValue(overtimeMin),
+        DoubleCellValue(earnedBreakMin),
         TextCellValue(auditStatus),
         TextCellValue(origMin),
         TextCellValue(entry.editNote ?? '-'),
-        TextCellValue(entry.groupId),
+        TextCellValue(entry.outcomeId ?? '-'),
       ]);
     }
 
@@ -126,7 +122,7 @@ class ExcelExportService {
 
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       final String? outputPath = await FilePicker.platform.saveFile(
-        dialogTitle: 'ذخیره خروجی اکسل کارفرما',
+        dialogTitle: 'ذخیره خروجی اکسل تایم‌شیت Mab-Focus',
         fileName: defaultFileName,
       );
 
@@ -155,41 +151,56 @@ class ExcelExportService {
     }
   }
 
-  Future<String?> exportWorkNotesToExcel({
-    required List<WorkNoteEntry> notes,
+  Future<String?> exportSessionNotesToExcel({
+    required List<SessionNote> notes,
+    required List<OutcomeItem> outcomes,
+    required List<TimeRecord> records,
     required List<ProjectNode> projects,
   }) async {
     final excel = Excel.createExcel();
-    const String sheetName = 'MabFocus_WorkNotes';
+    const String sheetName = 'MabFocus_SessionNotes';
     final Sheet sheet = excel[sheetName];
     excel.setDefaultSheet(sheetName);
     if (excel.sheets.containsKey('Sheet1')) {
       excel.delete('Sheet1');
     }
 
-    final Map<String, ProjectNode> projectMap = {
-      for (final p in projects) p.id: p
+    final Map<String, OutcomeItem> outcomeMap = {
+      for (final o in outcomes) o.id: o
+    };
+    final Map<String, TimeRecord> recordMap = {
+      for (final r in records) r.id: r
     };
 
-    // سرستون‌های گزارش یادداشت‌ها
     sheet.appendRow([
       TextCellValue('ردیف'),
       TextCellValue('تاریخ و روز'),
       TextCellValue('ساعت ثبت'),
-      TextCellValue('عنوان تسک'),
-      TextCellValue('پروژه'),
-      TextCellValue('متن گزارش کار / یادداشت'),
+      TextCellValue('قلمرو'),
+      TextCellValue('نوع یادداشت'),
+      TextCellValue('عنوان کار / فعالیت'),
+      TextCellValue('مسیر پروژه'),
+      TextCellValue('متن یادداشت'),
       TextCellValue('تعداد تصاویر'),
       TextCellValue('مسیر فایل تصاویر'),
     ]);
 
     for (int i = 0; i < notes.length; i++) {
       final note = notes[i];
-      final project =
-          note.projectId != null ? projectMap[note.projectId] : null;
-      final projectName = project != null
-          ? (project.isMacro ? project.name : '↳ ${project.name}')
-          : '-';
+      final breadcrumb =
+          DatabaseService.getProjectBreadcrumb(note.projectId, projects)
+              .map((e) => e.name)
+              .join(' > ');
+      final projectName = breadcrumb.isEmpty ? '-' : breadcrumb;
+
+      final String taskTitle = (note.outcomeId != null
+              ? outcomeMap[note.outcomeId]?.title
+              : null) ??
+          (note.timeRecordId != null
+              ? recordMap[note.timeRecordId]?.titleSnapshot
+              : null) ??
+          AppDefaults.untitledTaskTitle;
+
       final jalaliStr = JalaliDate.formatWithWeekDay(note.createdAt);
       final timeStr =
           '${note.createdAt.hour.toString().padLeft(2, '0')}:${note.createdAt.minute.toString().padLeft(2, '0')}';
@@ -198,7 +209,9 @@ class ExcelExportService {
         IntCellValue(i + 1),
         TextCellValue(jalaliStr),
         TextCellValue(timeStr),
-        TextCellValue(note.taskTitle),
+        TextCellValue(note.realm.labelFa),
+        TextCellValue(note.noteType.labelFa),
+        TextCellValue(taskTitle),
         TextCellValue(projectName),
         TextCellValue(note.content),
         IntCellValue(note.imagePaths.length),
@@ -210,11 +223,11 @@ class ExcelExportService {
     if (fileBytes == null) return null;
 
     final timestamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
-    final defaultFileName = 'MabFocus_WorkNotes_$timestamp.xlsx';
+    final defaultFileName = 'MabFocus_SessionNotes_$timestamp.xlsx';
 
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       final String? outputPath = await FilePicker.platform.saveFile(
-        dialogTitle: 'ذخیره خروجی اکسل یادداشت‌های گزارش کار',
+        dialogTitle: 'ذخیره خروجی اکسل یادداشت‌های حین کار',
         fileName: defaultFileName,
       );
 
@@ -233,7 +246,7 @@ class ExcelExportService {
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(mobilePath)],
-          text: 'خروجی اکسل یادداشت‌های گزارش کار Mab-Focus',
+          text: 'خروجی اکسل یادداشت‌های حین کار Mab-Focus',
         ),
       );
       return mobilePath;

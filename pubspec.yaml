@@ -1,7 +1,7 @@
 name: mab_focus
-description: Mab-Focus v3.0 - Life Capacity OS, Dual-Clock Pomodoro, Stopwatch & Multi-Calendar Tracker
+description: Mab-Focus v4.0 - Dual-Realm Life & Work OS, Flowmodoro Engine, Infinite Project Tree & Multi-Calendar Tracker
 publish_to: 'none'
-version: 3.0.0+1
+version: 4.0.0+1
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

@@ -118,6 +118,20 @@ class MusicPlayerService extends ChangeNotifier {
     notifyListeners();
   }
 
+  void onRealmChanged(AppRealm realm) {
+    if (realm == AppRealm.life) {
+      if (!_playDuringBreaks && _isPlaying) {
+        _player.pause();
+        _pausedByBreak = true;
+      }
+    } else if (realm == AppRealm.work) {
+      if (_pausedByBreak) {
+        _player.resume();
+        _pausedByBreak = false;
+      }
+    }
+  }
+
   void onPomodoroModeChanged(PomodoroMode mode) {
     if (mode == PomodoroMode.shortBreak || mode == PomodoroMode.longBreak) {
       if (!_playDuringBreaks && _isPlaying) {

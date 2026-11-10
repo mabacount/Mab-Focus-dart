@@ -1,7 +1,11 @@
+import 'pomodoro_state.dart';
+
 class ScheduledBlock {
   final String id;
+  final AppRealm realm;
   final String title;
   final String? projectId;
+  final String? outcomeId;
   final DateTime startTime;
   final DateTime endTime;
   final bool isRecurringWeekly;
@@ -11,8 +15,10 @@ class ScheduledBlock {
 
   const ScheduledBlock({
     required this.id,
+    this.realm = AppRealm.work,
     required this.title,
     this.projectId,
+    this.outcomeId,
     required this.startTime,
     required this.endTime,
     this.isRecurringWeekly = false,
@@ -22,12 +28,16 @@ class ScheduledBlock {
   });
 
   int get plannedDurationSeconds => endTime.difference(startTime).inSeconds;
+  bool get isWork => realm == AppRealm.work;
+  bool get isLife => realm == AppRealm.life;
 
   Map<String, dynamic> toMap() {
     return {
       'id': id,
+      'realm': realm.dbValue,
       'title': title,
       'project_id': projectId,
+      'outcome_id': outcomeId,
       'start_time': startTime.toIso8601String(),
       'end_time': endTime.toIso8601String(),
       'is_recurring_weekly': isRecurringWeekly ? 1 : 0,
@@ -40,8 +50,10 @@ class ScheduledBlock {
   factory ScheduledBlock.fromMap(Map<String, dynamic> map) {
     return ScheduledBlock(
       id: map['id'] as String,
+      realm: AppRealmX.fromDb(map['realm'] as String?),
       title: map['title'] as String,
       projectId: map['project_id'] as String?,
+      outcomeId: map['outcome_id'] as String?,
       startTime: DateTime.parse(map['start_time'] as String),
       endTime: DateTime.parse(map['end_time'] as String),
       isRecurringWeekly: (map['is_recurring_weekly'] as int? ?? 0) == 1,
@@ -53,8 +65,12 @@ class ScheduledBlock {
 
   ScheduledBlock copyWith({
     String? id,
+    AppRealm? realm,
     String? title,
     String? projectId,
+    bool clearProjectId = false,
+    String? outcomeId,
+    bool clearOutcomeId = false,
     DateTime? startTime,
     DateTime? endTime,
     bool? isRecurringWeekly,
@@ -64,8 +80,10 @@ class ScheduledBlock {
   }) {
     return ScheduledBlock(
       id: id ?? this.id,
+      realm: realm ?? this.realm,
       title: title ?? this.title,
-      projectId: projectId ?? this.projectId,
+      projectId: clearProjectId ? null : (projectId ?? this.projectId),
+      outcomeId: clearOutcomeId ? null : (outcomeId ?? this.outcomeId),
       startTime: startTime ?? this.startTime,
       endTime: endTime ?? this.endTime,
       isRecurringWeekly: isRecurringWeekly ?? this.isRecurringWeekly,

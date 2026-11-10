@@ -1,15 +1,232 @@
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants.dart';
+import '../../core/date_time_utils.dart';
 import '../../core/jalali_date.dart';
-import '../../models/task_log_entry.dart';
-import '../../models/work_note_entry.dart';
+import '../../models/pomodoro_state.dart';
+import '../../models/session_note.dart';
+import '../../models/time_record.dart';
 import '../../providers/app_state_provider.dart';
+import '../../services/database_service.dart';
+import '../shared/unified_project_selector.dart';
 import '../shared/work_note_dialog.dart';
+
+/// دیالوگ ویرایش ممیزی‌دار یک رکورد زمانی (قابل استفاده در تایم‌شیت و تقویم)
+Future<void> showTimeRecordEditDialog(
+  BuildContext context,
+  TimeRecord record,
+) async {
+  final provider = context.read<AppStateProvider>();
+  final titleCtrl = TextEditingController(text: record.titleSnapshot);
+  final editNoteCtrl = TextEditingController(text: record.editNote ?? '');
+  AppRealm selectedRealm = record.realm;
+  String? selectedProjectId = record.projectId;
+  DateTime start = record.startTime;
+  DateTime end = record.endTime ??
+      record.startTime.add(Duration(seconds: record.durationSeconds));
+
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setModalState) {
+        final realmColor = selectedRealm == AppRealm.life
+            ? AppColors.lifeGreen
+            : AppColors.workBlue;
+        final durationSec = end.difference(start).inSeconds.clamp(60, 86400);
+
+        return AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: realmColor.withAlpha(110)),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.edit_calendar_rounded, color: realmColor, size: 20),
+              const SizedBox(width: 8),
+              const Text(
+                'ویرایش ممیزی‌دار رکورد زمانی [Edited]',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 450,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SegmentedButton<AppRealm>(
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      selectedBackgroundColor: realmColor.withAlpha(45),
+                      selectedForegroundColor: realmColor,
+                    ),
+                    segments: const [
+                      ButtonSegment(
+                        value: AppRealm.work,
+                        icon: Icon(Icons.work_rounded, size: 15),
+                        label: Text('قلمرو کار'),
+                      ),
+                      ButtonSegment(
+                        value: AppRealm.life,
+                        icon: Icon(Icons.spa_rounded, size: 15),
+                        label: Text('قلمرو زندگی'),
+                      ),
+                    ],
+                    selected: {selectedRealm},
+                    onSelectionChanged: (s) {
+                      setModalState(() {
+                        selectedRealm = s.first;
+                        if (selectedProjectId != null) {
+                          final p = provider.getProjectById(selectedProjectId);
+                          if (p != null && p.realm != selectedRealm) {
+                            selectedProjectId = null;
+                          }
+                        }
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: titleCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'عنوان رکورد',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  UnifiedProjectSelector(
+                    projects: provider.projects,
+                    realmFilter: selectedRealm,
+                    selectedProjectId: selectedProjectId,
+                    accentColor: realmColor,
+                    onSelected: (pid) =>
+                        setModalState(() => selectedProjectId = pid),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.access_time_rounded, size: 16),
+                          label: Text(
+                            'شروع: ${DateFormat('HH:mm').format(start)}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          onPressed: () async {
+                            final t = await showTimePicker(
+                              context: ctx,
+                              initialTime: TimeOfDay.fromDateTime(start),
+                            );
+                            if (t != null) {
+                              setModalState(() {
+                                start = DateTime(start.year, start.month,
+                                    start.day, t.hour, t.minute);
+                                if (!end.isAfter(start)) {
+                                  end = start.add(const Duration(minutes: 5));
+                                }
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.alarm_on_rounded, size: 16),
+                          label: Text(
+                            'پایان: ${DateFormat('HH:mm').format(end)}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          onPressed: () async {
+                            final t = await showTimePicker(
+                              context: ctx,
+                              initialTime: TimeOfDay.fromDateTime(end),
+                            );
+                            if (t != null) {
+                              final candidate = DateTime(
+                                  end.year, end.month, end.day, t.hour, t.minute);
+                              if (candidate.isAfter(start)) {
+                                setModalState(() => end = candidate);
+                              }
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'مدت محاسبه‌شده: ${(durationSec / 60).toStringAsFixed(1)} دقیقه • تاریخ: ${JalaliDate.formatWithWeekDay(start)}',
+                    style: const TextStyle(
+                        fontSize: 11.5, color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: editNoteCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'علت ویرایش (ممیزی سیستم)',
+                      hintText: 'مثلاً: فراموشی ثبت زمان پایان',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('انصراف'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: realmColor),
+              icon: const Icon(Icons.save_rounded, size: 16),
+              label: const Text('ذخیره ویرایش'),
+              onPressed: () async {
+                final cleanTitle = titleCtrl.text.trim();
+                if (cleanTitle.isEmpty) return;
+
+                await provider.editTimeRecordWithAudit(
+                  id: record.id,
+                  newTitle: cleanTitle,
+                  newRealm: selectedRealm,
+                  newOutcomeId:
+                      selectedRealm == record.realm ? record.outcomeId : null,
+                  clearOutcomeId:
+                      selectedRealm != record.realm || record.outcomeId == null,
+                  newProjectId: selectedProjectId,
+                  clearProjectId: selectedProjectId == null,
+                  newTagIds: record.tagIds,
+                  newStartTime: start,
+                  newEndTime: end,
+                  newDurationSeconds:
+                      end.difference(start).inSeconds.clamp(1, 86400),
+                  editNote: editNoteCtrl.text.trim().isEmpty
+                      ? 'ویرایش دستی توسط کاربر'
+                      : editNoteCtrl.text.trim(),
+                );
+                if (ctx.mounted) Navigator.of(ctx).pop();
+              },
+            ),
+          ],
+        );
+      },
+    ),
+  ).whenComplete(() {
+    titleCtrl.dispose();
+    editNoteCtrl.dispose();
+  });
+}
 
 class ActivityLogTab extends StatefulWidget {
   const ActivityLogTab({super.key});
@@ -23,12 +240,15 @@ class _ActivityLogTabState extends State<ActivityLogTab>
   late TabController _tabController;
 
   // فیلترهای گزارش کارکرد
-  String _filterType = 'all'; // all | work | break | stopwatch
+  AppRealm? _recordRealmFilter; // null = همه ۲۴ ساعت
+  String _clockFilter = 'all'; // all | pomodoro | stopwatch | untitled
   String? _selectedProjectId;
   bool _onlyToday = false;
 
   // فیلترهای یادداشت‌ها
+  AppRealm? _noteRealmFilter;
   String? _noteFilterProjectId;
+  SessionNoteType? _noteTypeFilter;
   final TextEditingController _noteSearchCtrl = TextEditingController();
 
   @override
@@ -44,49 +264,81 @@ class _ActivityLogTabState extends State<ActivityLogTab>
     super.dispose();
   }
 
-  String _formatDuration(int seconds) {
-    final int h = seconds ~/ 3600;
-    final int m = (seconds % 3600) ~/ 60;
-    final int s = seconds % 60;
-    if (h > 0) {
-      return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-    }
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-  }
-
-  List<TaskLogEntry> _filterLogs(List<TaskLogEntry> list) {
+  List<TimeRecord> _filterRecords(
+    List<TimeRecord> list,
+    AppStateProvider provider,
+  ) {
     final now = DateTime.now();
-    return list.where((l) {
+    final Set<String>? projFamily = _selectedProjectId != null
+        ? DatabaseService.getProjectAndDescendantIds(
+            _selectedProjectId!, provider.projects)
+        : null;
+
+    return list.where((r) {
+      if (_recordRealmFilter != null && r.realm != _recordRealmFilter) {
+        return false;
+      }
       if (_onlyToday) {
-        if (l.startTime.year != now.year ||
-            l.startTime.month != now.month ||
-            l.startTime.day != now.day) {
+        if (r.startTime.year != now.year ||
+            r.startTime.month != now.month ||
+            r.startTime.day != now.day) {
           return false;
         }
       }
-      if (_selectedProjectId != null) {
-        if (l.macroProjectId != _selectedProjectId &&
-            l.subProjectId != _selectedProjectId) {
+      if (projFamily != null) {
+        if (r.projectId == null || !projFamily.contains(r.projectId)) {
           return false;
         }
       }
-      if (_filterType == 'work') return l.isWork;
-      if (_filterType == 'break') return l.isBreakEntry;
-      if (_filterType == 'stopwatch') return l.isStopwatch;
+      if (_clockFilter == 'pomodoro') return r.isPomodoro;
+      if (_clockFilter == 'stopwatch') return r.isStopwatch;
+      if (_clockFilter == 'untitled') return r.isUntitledDraft;
       return true;
     }).toList();
   }
 
-  List<WorkNoteEntry> _filterNotes(List<WorkNoteEntry> list) {
+  List<SessionNote> _filterNotes(
+    List<SessionNote> list,
+    AppStateProvider provider,
+  ) {
     final query = _noteSearchCtrl.text.trim().toLowerCase();
+    final Set<String>? projFamily = _noteFilterProjectId != null
+        ? DatabaseService.getProjectAndDescendantIds(
+            _noteFilterProjectId!, provider.projects)
+        : null;
+
     return list.where((n) {
-      if (_noteFilterProjectId != null && n.projectId != _noteFilterProjectId) {
+      if (_noteRealmFilter != null && n.realm != _noteRealmFilter) {
         return false;
       }
+      if (_noteTypeFilter != null && n.noteType != _noteTypeFilter) {
+        return false;
+      }
+      if (projFamily != null) {
+        if (n.projectId == null || !projFamily.contains(n.projectId)) {
+          return false;
+        }
+      }
       if (query.isNotEmpty) {
-        final matchesTitle = n.taskTitle.toLowerCase().contains(query);
+        final outcome =
+            n.outcomeId != null ? provider.getOutcomeById(n.outcomeId!) : null;
+        final rec = n.timeRecordId != null
+            ? provider.getTimeRecordById(n.timeRecordId!)
+            : null;
+        final projName = provider.getProjectBreadcrumbString(n.projectId);
+
         final matchesContent = n.content.toLowerCase().contains(query);
-        if (!matchesTitle && !matchesContent) return false;
+        final matchesOutcome =
+            (outcome?.title ?? '').toLowerCase().contains(query);
+        final matchesRecord =
+            (rec?.titleSnapshot ?? '').toLowerCase().contains(query);
+        final matchesProj = projName.toLowerCase().contains(query);
+        if (!matchesContent &&
+            !matchesOutcome &&
+            !matchesRecord &&
+            !matchesProj) {
+          return false;
+        }
       }
       return true;
     }).toList();
@@ -126,62 +378,65 @@ class _ActivityLogTabState extends State<ActivityLogTab>
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<AppStateProvider>();
-    final notesCount = provider.workNotes.length;
+    final palette = provider.activePalette;
+    final notesCount = provider.sessionNotes.length;
 
     return Column(
       children: [
-        // هدر تب‌ها برای سوییچ بین لاگ‌های کارکرد و دفترچه یادداشت‌ها
+        // هدر تب‌ها
         Container(
-          color: AppColors.surface,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          color: palette.surface,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           child: Row(
             children: [
-              TabBar(
-                controller: _tabController,
-                isScrollable: true,
-                tabAlignment: TabAlignment.start,
-                indicatorColor: AppColors.focus,
-                labelColor: AppColors.focus,
-                unselectedLabelColor: AppColors.textSecondary,
-                tabs: [
-                  const Tab(
-                    icon: Icon(Icons.table_chart_rounded, size: 18),
-                    text: 'گزارش کارکرد و تایم‌شیت',
-                  ),
-                  Tab(
-                    icon: Badge(
-                      isLabelVisible: notesCount > 0,
-                      label: Text('$notesCount'),
-                      backgroundColor: AppColors.focus,
-                      child: const Icon(Icons.note_alt_rounded, size: 18),
+              Expanded(
+                child: TabBar(
+                  controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  indicatorColor: palette.accent,
+                  labelColor: palette.accent,
+                  unselectedLabelColor: AppColors.textSecondary,
+                  tabs: [
+                    const Tab(
+                      icon: Icon(Icons.table_chart_rounded, size: 18),
+                      text: 'گزارش کارکرد و تایم‌شیت',
                     ),
-                    text: 'دفترچه یادداشت‌های کاری',
-                  ),
-                ],
+                    Tab(
+                      icon: Badge(
+                        isLabelVisible: notesCount > 0,
+                        label: Text('$notesCount'),
+                        backgroundColor: palette.accent,
+                        child: const Icon(Icons.note_alt_rounded, size: 18),
+                      ),
+                      text: 'دفترچه یادداشت‌های جلسات',
+                    ),
+                  ],
+                ),
               ),
-              const Spacer(),
-              // دکمه ثبت فوری یادداشت
+              const SizedBox(width: 8),
               FilledButton.tonalIcon(
                 style: FilledButton.styleFrom(
                   visualDensity: VisualDensity.compact,
+                  backgroundColor: palette.accent.withAlpha(35),
+                  foregroundColor: palette.accent,
                 ),
                 icon: const Icon(Icons.edit_note_rounded, size: 16),
-                label: const Text('ثبت گزارش کار +',
+                label: const Text('ثبت یادداشت +',
                     style: TextStyle(fontSize: 11.5)),
                 onPressed: () => WorkNoteDialog.openStandalone(context),
               ),
             ],
           ),
         ),
-        const Divider(height: 1, color: AppColors.border),
+        Divider(height: 1, color: palette.border),
 
-        // بدنه تب‌ها
         Expanded(
           child: TabBarView(
             controller: _tabController,
             children: [
-              _buildActivityLogsView(provider),
-              _buildWorkNotesView(provider),
+              _buildActivityLogsView(provider, palette),
+              _buildSessionNotesView(provider, palette),
             ],
           ),
         ),
@@ -191,82 +446,127 @@ class _ActivityLogTabState extends State<ActivityLogTab>
 
   // ==================== ۱. نمای گزارش کارکرد و تایم‌شیت ====================
 
-  Widget _buildActivityLogsView(AppStateProvider provider) {
-    final filtered = _filterLogs(provider.taskLogs);
-    final totalSec = filtered.fold<int>(0, (sum, i) => sum + i.durationSeconds);
-    final projects = provider.projects;
+  Widget _buildActivityLogsView(
+    AppStateProvider provider,
+    RealmPalette palette,
+  ) {
+    final filtered = _filterRecords(provider.timeRecords, provider);
+    final totalSec =
+        filtered.fold<int>(0, (sum, item) => sum + item.durationSeconds);
 
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // نوار فیلتر و خروجی اکسل
           Card(
+            color: palette.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: palette.border),
+            ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Row(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  FilterChip(
-                    label: const Text('امروز'),
-                    selected: _onlyToday,
-                    onSelected: (v) => setState(() => _onlyToday = v),
-                  ),
-                  const SizedBox(width: 8),
-                  DropdownButton<String>(
-                    value: _filterType,
-                    isExpanded: false,
-                    dropdownColor: AppColors.surfaceElevated,
-                    items: const [
-                      DropdownMenuItem(
-                          value: 'all', child: Text('همه رکوردها')),
-                      DropdownMenuItem(
-                          value: 'work', child: Text('فقط کارکرد تمرکز')),
-                      DropdownMenuItem(
-                          value: 'break', child: Text('فقط استراحت‌ها')),
-                      DropdownMenuItem(
-                          value: 'stopwatch', child: Text('کرنومتر / خواب')),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      FilterChip(
+                        label: const Text('امروز',
+                            style: TextStyle(fontSize: 11.5)),
+                        selected: _onlyToday,
+                        selectedColor: palette.accent.withAlpha(45),
+                        onSelected: (v) => setState(() => _onlyToday = v),
+                      ),
+                      SegmentedButton<AppRealm?>(
+                        style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          selectedBackgroundColor: palette.accent.withAlpha(45),
+                        ),
+                        segments: const [
+                          ButtonSegment(
+                              value: null, label: Text('۲۴ ساعته')),
+                          ButtonSegment(
+                              value: AppRealm.work, label: Text('کار')),
+                          ButtonSegment(
+                              value: AppRealm.life, label: Text('زندگی')),
+                        ],
+                        selected: {_recordRealmFilter},
+                        onSelectionChanged: (s) =>
+                            setState(() => _recordRealmFilter = s.first),
+                      ),
+                      DropdownButton<String>(
+                        value: _clockFilter,
+                        dropdownColor: palette.surfaceElevated,
+                        underline: const SizedBox.shrink(),
+                        items: const [
+                          DropdownMenuItem(
+                              value: 'all', child: Text('همه ساعت‌ها')),
+                          DropdownMenuItem(
+                              value: 'pomodoro', child: Text('پومودورو')),
+                          DropdownMenuItem(
+                              value: 'stopwatch', child: Text('کرنومتر آزاد')),
+                          DropdownMenuItem(
+                              value: 'untitled', child: Text('نیازمند عنوان')),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => _clockFilter = v ?? 'all'),
+                      ),
+                      SizedBox(
+                        width: 220,
+                        child: UnifiedProjectSelector(
+                          projects: provider.projects,
+                          realmFilter: _recordRealmFilter,
+                          selectedProjectId: _selectedProjectId,
+                          emptyLabel: 'فیلتر پروژه: همه',
+                          accentColor: palette.accent,
+                          onSelected: (pid) =>
+                              setState(() => _selectedProjectId = pid),
+                        ),
+                      ),
                     ],
-                    onChanged: (v) => setState(() => _filterType = v ?? 'all'),
                   ),
-                  const SizedBox(width: 8),
-                  DropdownButton<String?>(
-                    value: _selectedProjectId,
-                    isExpanded: false,
-                    dropdownColor: AppColors.surfaceElevated,
-                    hint: const Text('فیلتر پروژه: همه'),
-                    items: [
-                      const DropdownMenuItem(
-                          value: null, child: Text('همه پروژه‌ها')),
-                      ...projects.map((p) => DropdownMenuItem(
-                            value: p.id,
-                            child: Text(p.isMacro ? p.name : '↳ ${p.name}'),
-                          )),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        'مجموع (${filtered.length}): ${DateTimeUtils.formatDurationHms(totalSec)}',
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.bold,
+                          color: palette.accent,
+                        ),
+                      ),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: AppColors.lifeGreen),
+                        icon: const Icon(Icons.table_view_rounded, size: 16),
+                        label: const Text('اکسل ۱۶ ستونی',
+                            style: TextStyle(fontSize: 11.5)),
+                        onPressed: () async {
+                          final path =
+                              await provider.exportRecordsToExcel(filtered);
+                          if (mounted && path != null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content:
+                                    Text('فایل اکسل در مسیر زیر ذخیره شد: $path'),
+                                backgroundColor: AppColors.lifeGreen,
+                              ),
+                            );
+                          }
+                        },
+                      ),
                     ],
-                    onChanged: (v) => setState(() => _selectedProjectId = v),
-                  ),
-                  const Spacer(),
-                  Text(
-                    'مجموع: ${_formatDuration(totalSec)}',
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.focus,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.breakTime),
-                    icon: const Icon(Icons.table_view_rounded, size: 16),
-                    label: const Text('خروجی اکسل ۱۵ ستونی (.xlsx)'),
-                    onPressed: () async {
-                      final path = await provider.exportLogsToExcel(filtered);
-                      if (mounted && path != null) {
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                            content: Text('فایل در مسیر زیر ذخیره شد: $path')));
-                      }
-                    },
                   ),
                 ],
               ),
@@ -274,88 +574,170 @@ class _ActivityLogTabState extends State<ActivityLogTab>
           ),
           const SizedBox(height: 10),
 
-          // لیست رکوردها
           Expanded(
             child: filtered.isEmpty
                 ? const Center(
-                    child: Text('هیچ رکوردی برای نمایش یافت نشد.',
-                        style: TextStyle(color: AppColors.textMuted)))
+                    child: Text(
+                      'هیچ رکوردی برای نمایش با این فیلتر یافت نشد.',
+                      style: TextStyle(color: AppColors.textMuted),
+                    ),
+                  )
                 : ListView.separated(
                     itemCount: filtered.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 6),
                     itemBuilder: (_, i) {
-                      final log = filtered[i];
-                      final project = provider.getProjectById(
-                          log.subProjectId ?? log.macroProjectId);
+                      final rec = filtered[i];
+                      final realmColor = rec.isLife
+                          ? AppColors.lifeGreen
+                          : AppColors.workBlue;
+                      final outcome = rec.outcomeId != null
+                          ? provider.getOutcomeById(rec.outcomeId!)
+                          : null;
+                      final breadcrumb =
+                          provider.getProjectBreadcrumbString(rec.projectId);
+                      final notes = provider.getNotesForRecord(rec.id);
 
                       return Card(
+                        color: palette.surface,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          side: BorderSide(color: palette.border),
+                        ),
                         child: ListTile(
                           dense: true,
-                          title: Row(
+                          leading: Container(
+                            width: 4,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: realmColor,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                          title: Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Text(
-                                log.title,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 1.5),
+                                decoration: BoxDecoration(
+                                  color: realmColor.withAlpha(34),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  rec.realm.labelFa,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: realmColor,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
-                              if (project != null) ...[
-                                const SizedBox(width: 8),
+                              Text(
+                                outcome?.title ?? rec.titleSnapshot,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              if (breadcrumb.isNotEmpty)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 6, vertical: 1.5),
                                   decoration: BoxDecoration(
-                                    color: Color(int.parse(project.colorHex
-                                            .replaceFirst('#', '0xFF')))
-                                        .withAlpha(35),
+                                    color: AppColors.surfaceElevated,
                                     borderRadius: BorderRadius.circular(4),
                                   ),
                                   child: Text(
-                                    project.name,
-                                    style: TextStyle(
+                                    breadcrumb,
+                                    style: const TextStyle(
                                       fontSize: 10.5,
-                                      color: Color(int.parse(project.colorHex
-                                          .replaceFirst('#', '0xFF'))),
-                                      fontWeight: FontWeight.bold,
+                                      color: AppColors.textSecondary,
                                     ),
                                   ),
                                 ),
-                              ],
-                              if (log.isEdited) ...[
-                                const SizedBox(width: 6),
+                              if (rec.isEdited)
                                 Tooltip(
                                   message:
-                                      'زمان اولیه: ${_formatDuration(log.originalDurationSeconds ?? log.durationSeconds)}',
+                                      'زمان اولیه: ${DateTimeUtils.formatDurationHms(rec.originalDurationSeconds ?? rec.durationSeconds)}',
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 5, vertical: 1),
                                     decoration: BoxDecoration(
-                                        color: AppColors.edited.withAlpha(40),
-                                        borderRadius: BorderRadius.circular(4)),
-                                    child: const Text('[Edited]',
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            color: AppColors.edited,
-                                            fontWeight: FontWeight.bold)),
+                                      color: AppColors.edited.withAlpha(40),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      '[Edited]',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: AppColors.edited,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ],
+                              if (notes.isNotEmpty)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: palette.accent.withAlpha(32),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    '${notes.length} یادداشت',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: palette.accent,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
                             ],
                           ),
                           subtitle: Text(
-                            '${DateFormat('yyyy/MM/dd HH:mm').format(log.startTime)} | نوع: ${log.entryType}',
+                            '${JalaliDate.formatWithWeekDay(rec.startTime)} ${DateFormat('HH:mm').format(rec.startTime)}'
+                            ' • ${rec.clockMode.labelFa}'
+                            '${rec.earnedBreakSeconds > 0 ? " • +${DateTimeUtils.formatDurationHms(rec.earnedBreakSeconds)} بانک" : ""}'
+                            '${rec.isOpen ? " • (در حال اجرا)" : ""}',
                             style: const TextStyle(fontSize: 11),
                           ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(_formatDuration(log.durationSeconds),
-                                  style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold)),
+                              Text(
+                                DateTimeUtils.formatDurationHms(rec.isOpen
+                                    ? provider.activeRecordElapsedSeconds
+                                    : rec.durationSeconds),
+                                style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: realmColor,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
                               IconButton(
+                                tooltip:
+                                    'تبدیل به ${rec.isWork ? "زندگی" : "کار"} (چالش ۲)',
+                                icon: Icon(Icons.swap_horiz_rounded,
+                                    size: 18, color: realmColor),
+                                onPressed: () =>
+                                    provider.swapSavedRecordRealm(rec.id),
+                              ),
+                              if (!rec.isOpen)
+                                IconButton(
+                                  tooltip: 'ویرایش رکورد',
+                                  icon:
+                                      const Icon(Icons.edit_outlined, size: 17),
+                                  onPressed: () =>
+                                      showTimeRecordEditDialog(context, rec),
+                                ),
+                              IconButton(
+                                tooltip: 'حذف رکورد',
                                 icon: const Icon(Icons.delete_outline,
-                                    size: 16, color: Colors.redAccent),
-                                onPressed: () => provider.deleteTaskLog(log.id),
+                                    size: 17, color: Colors.redAccent),
+                                onPressed: () =>
+                                    provider.deleteTimeRecord(rec.id),
                               ),
                             ],
                           ),
@@ -369,81 +751,127 @@ class _ActivityLogTabState extends State<ActivityLogTab>
     );
   }
 
-  // ==================== ۲. نمای دفترچه یادداشت‌های کاری ====================
+  // ==================== ۲. نمای دفترچه یادداشت‌های جلسات ====================
 
-  Widget _buildWorkNotesView(AppStateProvider provider) {
-    final filtered = _filterNotes(provider.workNotes);
-    final projects = provider.projects;
+  Widget _buildSessionNotesView(
+    AppStateProvider provider,
+    RealmPalette palette,
+  ) {
+    final filtered = _filterNotes(provider.sessionNotes, provider);
 
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // نوار ابزار جستجو و خروجی اکسل یادداشت‌ها
           Card(
+            color: palette.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: palette.border),
+            ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Row(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(
-                    flex: 3,
-                    child: TextField(
-                      controller: _noteSearchCtrl,
-                      decoration: const InputDecoration(
-                        hintText: 'جست‌وجو در متن یا عنوان یادداشت‌ها...',
-                        prefixIcon: Icon(Icons.search_rounded, size: 18),
-                        border: OutlineInputBorder(),
-                        isDense: true,
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      ConstrainedBox(
+                        constraints:
+                            const BoxConstraints(minWidth: 200, maxWidth: 320),
+                        child: TextField(
+                          controller: _noteSearchCtrl,
+                          decoration: const InputDecoration(
+                            hintText: 'جست‌وجو در متن یا عنوان کار...',
+                            prefixIcon: Icon(Icons.search_rounded, size: 18),
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          onChanged: (_) => setState(() {}),
+                        ),
                       ),
-                      onChanged: (_) => setState(() {}),
-                    ),
+                      SegmentedButton<AppRealm?>(
+                        style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          selectedBackgroundColor: palette.accent.withAlpha(45),
+                        ),
+                        segments: const [
+                          ButtonSegment(value: null, label: Text('همه')),
+                          ButtonSegment(
+                              value: AppRealm.work, label: Text('کار')),
+                          ButtonSegment(
+                              value: AppRealm.life, label: Text('زندگی')),
+                        ],
+                        selected: {_noteRealmFilter},
+                        onSelectionChanged: (s) =>
+                            setState(() => _noteRealmFilter = s.first),
+                      ),
+                      SizedBox(
+                        width: 220,
+                        child: UnifiedProjectSelector(
+                          projects: provider.projects,
+                          realmFilter: _noteRealmFilter,
+                          selectedProjectId: _noteFilterProjectId,
+                          emptyLabel: 'فیلتر پروژه: همه',
+                          accentColor: palette.accent,
+                          onSelected: (pid) =>
+                              setState(() => _noteFilterProjectId = pid),
+                        ),
+                      ),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: palette.accent),
+                        icon: const Icon(Icons.file_download_rounded, size: 17),
+                        label: const Text('خروجی اکسل یادداشت‌ها',
+                            style: TextStyle(fontSize: 11.5)),
+                        onPressed: () async {
+                          final path = await provider
+                              .exportSessionNotesToExcel(filtered);
+                          if (mounted && path != null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                    'فایل اکسل یادداشت‌ها ذخیره شد: $path'),
+                                backgroundColor: AppColors.lifeGreen,
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    flex: 2,
-                    child: DropdownButtonFormField<String?>(
-                      initialValue: _noteFilterProjectId,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: 'فیلتر پروژه',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      dropdownColor: AppColors.surfaceElevated,
-                      items: [
-                        const DropdownMenuItem(
-                            value: null, child: Text('همه پروژه‌ها')),
-                        ...projects.map((p) => DropdownMenuItem(
-                              value: p.id,
-                              child: Text(p.isMacro ? p.name : '↳ ${p.name}'),
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        FilterChip(
+                          label: const Text('همه انواع',
+                              style: TextStyle(fontSize: 11)),
+                          selected: _noteTypeFilter == null,
+                          onSelected: (_) =>
+                              setState(() => _noteTypeFilter = null),
+                        ),
+                        const SizedBox(width: 6),
+                        ...SessionNoteType.values.map((t) => Padding(
+                              padding: const EdgeInsetsDirectional.only(end: 6),
+                              child: FilterChip(
+                                avatar:
+                                    Icon(t.icon, size: 14, color: t.color),
+                                label: Text(t.labelFa,
+                                    style: const TextStyle(fontSize: 11)),
+                                selected: _noteTypeFilter == t,
+                                onSelected: (_) => setState(() =>
+                                    _noteTypeFilter =
+                                        _noteTypeFilter == t ? null : t),
+                              ),
                             )),
                       ],
-                      onChanged: (v) =>
-                          setState(() => _noteFilterProjectId = v),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  // دکمه خروجی اکسل یادداشت‌ها
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.focus,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                    ),
-                    icon: const Icon(Icons.file_download_rounded, size: 18),
-                    label: const Text('خروجی اکسل یادداشت‌ها (.xlsx)'),
-                    onPressed: () async {
-                      final path =
-                          await provider.exportWorkNotesToExcel(filtered);
-                      if (mounted && path != null) {
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          content: Text(
-                              'فایل اکسل یادداشت‌ها در مسیر زیر ذخیره شد: $path'),
-                          backgroundColor: AppColors.breakTime,
-                        ));
-                      }
-                    },
                   ),
                 ],
               ),
@@ -451,7 +879,6 @@ class _ActivityLogTabState extends State<ActivityLogTab>
           ),
           const SizedBox(height: 10),
 
-          // لیست یا کارت‌های یادداشت‌ها
           Expanded(
             child: filtered.isEmpty
                 ? Center(
@@ -462,7 +889,7 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                             size: 48, color: AppColors.textMuted),
                         const SizedBox(height: 8),
                         const Text(
-                          'هیچ یادداشتی ثبت نشده است.',
+                          'هیچ یادداشتی برای نمایش یافت نشد.',
                           style: TextStyle(
                               color: AppColors.textSecondary, fontSize: 13),
                         ),
@@ -481,118 +908,184 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                     separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (ctx, idx) {
                       final note = filtered[idx];
-                      final project =
-                          provider.getProjectById(note.projectId);
+                      final realmColor = note.realm == AppRealm.life
+                          ? AppColors.lifeGreen
+                          : AppColors.workBlue;
+                      final outcome = note.outcomeId != null
+                          ? provider.getOutcomeById(note.outcomeId!)
+                          : null;
+                      final record = note.timeRecordId != null
+                          ? provider.getTimeRecordById(note.timeRecordId!)
+                          : null;
+                      final breadcrumb =
+                          provider.getProjectBreadcrumbString(note.projectId);
+                      final targetTitle = outcome?.title ??
+                          record?.titleSnapshot ??
+                          'یادداشت جلسه';
                       final jalaliDate =
                           JalaliDate.formatWithWeekDay(note.createdAt);
                       final timeStr =
-                          '${note.createdAt.hour.toString().padLeft(2, '0')}:${note.createdAt.minute.toString().padLeft(2, '0')}';
+                          DateFormat('HH:mm').format(note.createdAt);
 
                       return Card(
-                        elevation: 2,
+                        color: palette.surface,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: palette.border),
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(14),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // هدر کارت یادداشت
-                              Row(
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                alignment: WrapAlignment.spaceBetween,
                                 children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(6),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.focus.withAlpha(30),
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: const Icon(Icons.edit_note_rounded,
-                                        size: 18, color: AppColors.focus),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      note.taskTitle,
-                                      style: const TextStyle(
-                                        fontSize: 13.5,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                  if (project != null) ...[
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 7, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: Color(int.parse(project.colorHex
-                                                .replaceFirst('#', '0xFF')))
-                                            .withAlpha(35),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Text(
-                                        project.name,
-                                        style: TextStyle(
-                                          fontSize: 10.5,
-                                          color: Color(int.parse(project
-                                              .colorHex
-                                              .replaceFirst('#', '0xFF'))),
-                                          fontWeight: FontWeight.bold,
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 7, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: note.noteType.color
+                                              .withAlpha(35),
+                                          borderRadius:
+                                              BorderRadius.circular(6),
                                         ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                  ],
-                                  Text(
-                                    '$jalaliDate — ساعت $timeStr',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 11,
-                                      color: AppColors.textSecondary,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete_outline,
-                                        size: 18, color: Colors.redAccent),
-                                    tooltip: 'حذف یادداشت',
-                                    onPressed: () async {
-                                      final confirm = await showDialog<bool>(
-                                        context: context,
-                                        builder: (c) => AlertDialog(
-                                          title: const Text('حذف یادداشت'),
-                                          content: const Text(
-                                              'آیا از حذف این یادداشت اطمینان دارید؟'),
-                                          actions: [
-                                            TextButton(
-                                                onPressed: () =>
-                                                    Navigator.of(c).pop(false),
-                                                child: const Text('انصراف')),
-                                            FilledButton(
-                                                style: FilledButton.styleFrom(
-                                                    backgroundColor:
-                                                        Colors.redAccent),
-                                                onPressed: () =>
-                                                    Navigator.of(c).pop(true),
-                                                child: const Text('حذف')),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(note.noteType.icon,
+                                                size: 13,
+                                                color: note.noteType.color),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              note.noteType.labelFa,
+                                              style: TextStyle(
+                                                fontSize: 10.5,
+                                                color: note.noteType.color,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
                                           ],
                                         ),
-                                      );
-                                      if (confirm == true) {
-                                        await provider.deleteWorkNote(note.id);
-                                      }
-                                    },
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: realmColor.withAlpha(30),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                        ),
+                                        child: Text(
+                                          note.realm.labelFa,
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: realmColor,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      ConstrainedBox(
+                                        constraints:
+                                            const BoxConstraints(maxWidth: 280),
+                                        child: Text(
+                                          targetTitle,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (breadcrumb.isNotEmpty) ...[
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 7, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: palette.accent.withAlpha(30),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            breadcrumb,
+                                            style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: palette.accent,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                      ],
+                                      Text(
+                                        '$jalaliDate — $timeStr',
+                                        style: GoogleFonts.jetBrainsMono(
+                                          fontSize: 11,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete_outline,
+                                            size: 18, color: Colors.redAccent),
+                                        tooltip: 'حذف یادداشت',
+                                        onPressed: () async {
+                                          final confirm =
+                                              await showDialog<bool>(
+                                            context: context,
+                                            builder: (c) => AlertDialog(
+                                              title: const Text('حذف یادداشت'),
+                                              content: const Text(
+                                                  'آیا از حذف این یادداشت اطمینان دارید؟'),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () =>
+                                                      Navigator.of(c)
+                                                          .pop(false),
+                                                  child: const Text('انصراف'),
+                                                ),
+                                                FilledButton(
+                                                  style: FilledButton.styleFrom(
+                                                      backgroundColor:
+                                                          Colors.redAccent),
+                                                  onPressed: () =>
+                                                      Navigator.of(c).pop(true),
+                                                  child: const Text('حذف'),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm == true) {
+                                            await provider
+                                                .deleteSessionNote(note.id);
+                                          }
+                                        },
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 8),
-
-                              // متن یادداشت
-                              if (note.content.isNotEmpty)
+                              if (note.content.isNotEmpty) ...[
+                                const SizedBox(height: 8),
                                 Container(
                                   width: double.infinity,
                                   padding: const EdgeInsets.all(10),
                                   decoration: BoxDecoration(
-                                    color: AppColors.surfaceElevated,
+                                    color: palette.surfaceElevated,
                                     borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: AppColors.border),
+                                    border: Border.all(color: palette.border),
                                   ),
                                   child: SelectableText(
                                     note.content,
@@ -600,8 +1093,7 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                                         fontSize: 12.5, height: 1.5),
                                   ),
                                 ),
-
-                              // عکس‌های الصاقی با قابلیت بزرگ‌نمایی
+                              ],
                               if (note.imagePaths.isNotEmpty) ...[
                                 const SizedBox(height: 10),
                                 SizedBox(
@@ -618,28 +1110,24 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                                         onTap: () =>
                                             _showImagePreview(context, path),
                                         borderRadius: BorderRadius.circular(8),
-                                        child: Tooltip(
-                                          message:
-                                              'کلیک برای مشاهده در اندازه اصلی',
-                                          child: Container(
-                                            width: 80,
-                                            height: 80,
-                                            decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              border: Border.all(
-                                                  color: AppColors.border),
-                                              color: Colors.black26,
-                                            ),
-                                            clipBehavior: Clip.antiAlias,
-                                            child: file.existsSync()
-                                                ? Image.file(file,
-                                                    fit: BoxFit.cover)
-                                                : const Icon(
-                                                    Icons.broken_image_rounded,
-                                                    size: 24,
-                                                    color: AppColors.textMuted),
+                                        child: Container(
+                                          width: 80,
+                                          height: 80,
+                                          decoration: BoxDecoration(
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            border: Border.all(
+                                                color: palette.border),
+                                            color: Colors.black26,
                                           ),
+                                          clipBehavior: Clip.antiAlias,
+                                          child: file.existsSync()
+                                              ? Image.file(file,
+                                                  fit: BoxFit.cover)
+                                              : const Icon(
+                                                  Icons.broken_image_rounded,
+                                                  size: 24,
+                                                  color: AppColors.textMuted),
                                         ),
                                       );
                                     },

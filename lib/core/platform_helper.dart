@@ -17,8 +17,8 @@ class PlatformHelper {
   static const double baseCircleSize = 78.0;
   static const double hoveredWidth = 240.0;
   static const double hoveredHeight = 180.0;
-  static const double expandedSheetWidth = 340.0;
-  static const double expandedSheetHeight = 460.0;
+  static const double expandedSheetWidth = 360.0;
+  static const double expandedSheetHeight = 560.0;
 
   static Future<void> pinToAllVirtualDesktops() async {
     if (!Platform.isWindows) return;
@@ -32,13 +32,13 @@ class PlatformHelper {
     await windowManager.ensureInitialized();
 
     const WindowOptions windowOptions = WindowOptions(
-      size: Size(1180, 780),
+      size: Size(1220, 800),
       minimumSize: Size(18, 140),
       center: true,
       backgroundColor: AppColors.background,
       skipTaskbar: false,
       titleBarStyle: TitleBarStyle.normal,
-      title: 'Mab-Focus v3.0 — Life Capacity OS',
+      title: 'Mab-Focus v4.0 — Work & Life OS',
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
@@ -82,19 +82,31 @@ class PlatformHelper {
   static Future<void> updateFloatingSheetExpansion(bool isSheetExpanded) async {
     if (!isDesktop) return;
     try {
+      final display = await screenRetriever.getPrimaryDisplay();
       final currentPos = await windowManager.getPosition();
       final currentSize = await windowManager.getSize();
+
+      final double screenLeft = display.visiblePosition?.dx ?? 0.0;
+      final double screenTop = display.visiblePosition?.dy ?? 0.0;
+      final double screenWidth = display.size.width;
+      final double screenHeight = display.size.height;
 
       final double cx = currentPos.dx + (currentSize.width / 2.0);
       final double cy = currentPos.dy + 80.0;
 
       final double targetWidth =
           isSheetExpanded ? expandedSheetWidth : hoveredWidth;
-      final double targetHeight =
-          isSheetExpanded ? expandedSheetHeight : hoveredHeight;
+      final double targetHeight = isSheetExpanded
+          ? expandedSheetHeight.clamp(300.0, screenHeight - 40.0)
+          : hoveredHeight;
 
-      final double targetX = cx - (targetWidth / 2.0);
-      final double targetY = cy - 80.0;
+      final double maxX = screenLeft + screenWidth - targetWidth;
+      final double maxY = screenTop + screenHeight - targetHeight;
+
+      final double targetX = (cx - (targetWidth / 2.0))
+          .clamp(screenLeft, maxX > screenLeft ? maxX : screenLeft);
+      final double targetY = (cy - 80.0)
+          .clamp(screenTop, maxY > screenTop ? maxY : screenTop);
 
       await windowManager.setSize(Size(targetWidth, targetHeight));
       await windowManager.setPosition(Offset(targetX, targetY));

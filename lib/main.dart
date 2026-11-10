@@ -6,6 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'core/constants.dart';
 import 'core/platform_helper.dart';
+import 'models/pomodoro_state.dart';
 import 'providers/app_state_provider.dart';
 import 'services/music_player_service.dart';
 import 'ui/app_shell.dart';
@@ -23,7 +24,9 @@ Future<void> main(List<String> args) async {
         if (data['type'] == 'work_note') {
           runApp(WorkNoteStandaloneApp(
             windowController: windowController,
-            taskLogId: data['taskLogId'] as String?,
+            realm: AppRealmX.fromDb(data['realm'] as String?),
+            timeRecordId: data['timeRecordId'] as String?,
+            outcomeId: data['outcomeId'] as String?,
             projectId: data['projectId'] as String?,
             taskTitle: data['taskTitle'] as String? ?? 'تسک بدون عنوان',
             projectName: data['projectName'] as String?,
@@ -57,11 +60,17 @@ class MabFocusApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = context.select<AppStateProvider, RealmPalette>(
+      (p) => p.activePalette,
+    );
+    final isLife = context.select<AppStateProvider, bool>(
+      (p) => p.dashboardRealm == AppRealm.life,
+    );
     final baseTextTheme =
         GoogleFonts.vazirmatnTextTheme(ThemeData.dark().textTheme);
 
     return MaterialApp(
-      title: 'Mab-Focus v3.0',
+      title: 'Mab-Focus v4.0',
       debugShowCheckedModeBanner: false,
       locale: const Locale('fa', 'IR'),
       supportedLocales: const [
@@ -76,11 +85,11 @@ class MabFocusApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: AppColors.background,
-        colorScheme: const ColorScheme.dark(
-          primary: AppColors.focus,
-          secondary: AppColors.breakTime,
-          surface: AppColors.surface,
+        scaffoldBackgroundColor: palette.background,
+        colorScheme: ColorScheme.dark(
+          primary: palette.accent,
+          secondary: isLife ? AppColors.workBlue : AppColors.lifeGreen,
+          surface: palette.surface,
           error: Colors.redAccent,
         ),
         textTheme: baseTextTheme.apply(
@@ -88,11 +97,11 @@ class MabFocusApp extends StatelessWidget {
           displayColor: AppColors.textPrimary,
         ),
         cardTheme: CardThemeData(
-          color: AppColors.surface,
+          color: palette.surface,
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: AppColors.border, width: 1),
+            side: BorderSide(color: palette.border, width: 1),
           ),
         ),
       ),

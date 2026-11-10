@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,17 +7,25 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart' as intl;
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
+
 import '../../core/constants.dart';
+import '../../core/date_time_utils.dart';
 import '../../core/jalali_date.dart';
+import '../../models/outcome_item.dart';
+import '../../models/pomodoro_state.dart';
 import '../../models/project_node.dart';
 import '../../models/scheduled_block.dart';
-import '../../models/task_log_entry.dart';
+import '../../models/session_note.dart';
+import '../../models/time_record.dart';
 import '../../providers/app_state_provider.dart';
 import '../shared/unified_project_selector.dart';
 import 'activity_log_tab.dart';
 
 enum CalendarViewSpan { day1, day3, day7 }
+
 enum CalendarDisplayMode { grid, timesheet }
+
+enum CalendarRealmFilter { allDay, workOnly, lifeOnly }
 
 class CalendarGridTab extends StatefulWidget {
   const CalendarGridTab({super.key});
@@ -28,6 +37,7 @@ class CalendarGridTab extends StatefulWidget {
 class _CalendarGridTabState extends State<CalendarGridTab> {
   CalendarViewSpan _span = CalendarViewSpan.day7;
   CalendarDisplayMode _calendarDisplayMode = CalendarDisplayMode.grid;
+  CalendarRealmFilter _realmFilter = CalendarRealmFilter.allDay;
   DateTime _focusedDate = DateTime.now();
   final ScrollController _verticalScrollController = ScrollController();
   Timer? _minuteTicker;
@@ -81,23 +91,28 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
   }
 
   List<DateTime> get _displayedDays {
-    final cleanFocus =
-        DateTime(_focusedDate.year, _focusedDate.month, _focusedDate.day);
+    final cleanFocus = DateTimeUtils.startOfDay(_focusedDate);
 
     if (_span == CalendarViewSpan.day7) {
-      final int daysSinceSaturday = (_focusedDate.weekday == DateTime.sunday)
-          ? 1
-          : (_focusedDate.weekday == DateTime.saturday
-              ? 0
-              : _focusedDate.weekday + 1);
-      final startOfSat =
-          cleanFocus.subtract(Duration(days: daysSinceSaturday));
+      // چالش ۶: محاسبه استاندارد آغاز هفته جلالی از بامداد شنبه
+      final startOfSat = DateTimeUtils.startOfJalaliWeek(cleanFocus);
       return List.generate(7, (i) => startOfSat.add(Duration(days: i)));
     } else if (_span == CalendarViewSpan.day3) {
       final start = cleanFocus.subtract(const Duration(days: 1));
       return List.generate(3, (i) => start.add(Duration(days: i)));
     } else {
       return [cleanFocus];
+    }
+  }
+
+  bool _matchesRealmFilter(AppRealm realm) {
+    switch (_realmFilter) {
+      case CalendarRealmFilter.allDay:
+        return true;
+      case CalendarRealmFilter.workOnly:
+        return realm == AppRealm.work;
+      case CalendarRealmFilter.lifeOnly:
+        return realm == AppRealm.life;
     }
   }
 
@@ -155,187 +170,242 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     }
   }
 
-  /// ثبت گزارش کار دستی (با تگ «دستی»)
+  /// ثبت رکورد زمانی دستی (با تگ «دستی»)
   void _showAddManualLogModal(BuildContext context, DateTime defaultStart) {
     final provider = context.read<AppStateProvider>();
     final titleCtrl = TextEditingController();
-    String? selectedMacroId;
-    String? selectedSubId;
+    AppRealm selectedRealm = provider.dashboardRealm;
+    ClockType selectedClock = ClockType.pomodoro;
+    String? selectedProjectId;
+    String? selectedOutcomeId;
     DateTime start = defaultStart;
     DateTime end = defaultStart.add(const Duration(minutes: 30));
-    String entryType = 'work';
 
     showDialog<void>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
+            final realmColor = selectedRealm == AppRealm.life
+                ? AppColors.lifeGreen
+                : AppColors.workBlue;
             final durationMin = end.difference(start).inMinutes;
+            final openOutcomes =
+                provider.getOpenOutcomes(realm: selectedRealm);
 
             return AlertDialog(
               backgroundColor: AppColors.surface,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(color: AppColors.border),
+                side: BorderSide(color: realmColor.withAlpha(110)),
               ),
               title: Row(
                 children: [
                   Container(
                     padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
-                      color: AppColors.focus.withAlpha(35),
+                      color: realmColor.withAlpha(35),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(Icons.history_edu_rounded,
-                        color: AppColors.focus, size: 20),
+                    child: Icon(Icons.history_edu_rounded,
+                        color: realmColor, size: 20),
                   ),
                   const SizedBox(width: 10),
-                  const Text('ثبت گزارش کارکرد دستی (تگ دستی)',
-                      style:
-                          TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  const Text(
+                    'ثبت گزارش زمانی دستی (تگ دستی)',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
                 ],
               ),
               content: SizedBox(
-                width: 440,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: titleCtrl,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        labelText: 'عنوان فعالیت انجام‌شده',
-                        hintText: 'مثلاً: جلسه حضوری با کارفرما',
-                        filled: true,
-                        fillColor: AppColors.background,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
+                width: 450,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SegmentedButton<AppRealm>(
+                        style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          selectedBackgroundColor: realmColor.withAlpha(45),
+                          selectedForegroundColor: realmColor,
                         ),
-                        isDense: true,
+                        segments: const [
+                          ButtonSegment(
+                            value: AppRealm.work,
+                            icon: Icon(Icons.work_rounded, size: 15),
+                            label: Text('قلمرو کار'),
+                          ),
+                          ButtonSegment(
+                            value: AppRealm.life,
+                            icon: Icon(Icons.spa_rounded, size: 15),
+                            label: Text('قلمرو زندگی'),
+                          ),
+                        ],
+                        selected: {selectedRealm},
+                        onSelectionChanged: (s) => setModalState(() {
+                          selectedRealm = s.first;
+                          selectedOutcomeId = null;
+                          if (selectedProjectId != null) {
+                            final p = provider.getProjectById(selectedProjectId);
+                            if (p != null && p.realm != selectedRealm) {
+                              selectedProjectId = null;
+                            }
+                          }
+                        }),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(
-                            value: 'work',
-                            label: Text('کار / تمرکز'),
-                            icon: Icon(Icons.work_rounded, size: 14)),
-                        ButtonSegment(
-                            value: 'short_break',
-                            label: Text('استراحت / زندگی'),
-                            icon: Icon(Icons.coffee_rounded, size: 14)),
-                        ButtonSegment(
-                            value: 'stopwatch',
+                      const SizedBox(height: 10),
+                      SegmentedButton<ClockType>(
+                        style: SegmentedButton.styleFrom(
+                            visualDensity: VisualDensity.compact),
+                        segments: const [
+                          ButtonSegment(
+                            value: ClockType.pomodoro,
+                            icon: Icon(Icons.bolt_rounded, size: 15),
+                            label: Text('پومودورو هدفمند'),
+                          ),
+                          ButtonSegment(
+                            value: ClockType.stopwatch,
+                            icon: Icon(Icons.timer_outlined, size: 15),
                             label: Text('کرنومتر آزاد'),
-                            icon: Icon(Icons.timer_outlined, size: 14)),
-                      ],
-                      selected: {entryType},
-                      onSelectionChanged: (set) =>
-                          setModalState(() => entryType = set.first),
-                    ),
-                    const SizedBox(height: 12),
-                    UnifiedProjectSelector(
-                      projects: provider.projects,
-                      selectedMacroId: selectedMacroId,
-                      selectedSubId: selectedSubId,
-                      onSelected: (mId, sId) {
-                        setModalState(() {
-                          selectedMacroId = mId;
-                          selectedSubId = sId;
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.access_time_rounded,
-                                size: 16),
-                            label: Text(
-                              'شروع: ${intl.DateFormat('HH:mm').format(start)}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            onPressed: () async {
-                              final p = await showTimePicker(
-                                context: ctx,
-                                initialTime: TimeOfDay.fromDateTime(start),
-                              );
-                              if (p != null) {
-                                setModalState(() {
-                                  start = DateTime(start.year, start.month,
-                                      start.day, p.hour, p.minute);
-                                  if (end.isBefore(start)) {
-                                    end = start.add(const Duration(minutes: 30));
-                                  }
-                                });
-                              }
-                            },
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.alarm_on_rounded, size: 16),
-                            label: Text(
-                              'پایان: ${intl.DateFormat('HH:mm').format(end)}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            onPressed: () async {
-                              final p = await showTimePicker(
-                                context: ctx,
-                                initialTime: TimeOfDay.fromDateTime(end),
-                              );
-                              if (p != null) {
-                                setModalState(() {
-                                  end = DateTime(end.year, end.month, end.day,
-                                      p.hour, p.minute);
-                                });
-                              }
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: AppColors.background,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color: AppColors.draftWarning.withAlpha(60)),
+                        ],
+                        selected: {selectedClock},
+                        onSelectionChanged: (s) =>
+                            setModalState(() => selectedClock = s.first),
                       ),
-                      child: Row(
+                      const SizedBox(height: 10),
+                      if (openOutcomes.isNotEmpty) ...[
+                        DropdownButtonFormField<String?>(
+                          initialValue: selectedOutcomeId,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            labelText: 'اتصال به کار باز موجود (اختیاری)',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          dropdownColor: AppColors.surfaceElevated,
+                          items: [
+                            const DropdownMenuItem(
+                                value: null,
+                                child: Text('تعریف عنوان آزاد (بدون اتصال)')),
+                            ...openOutcomes.map((o) => DropdownMenuItem(
+                                  value: o.id,
+                                  child: Text(o.title,
+                                      overflow: TextOverflow.ellipsis),
+                                )),
+                          ],
+                          onChanged: (oid) {
+                            setModalState(() {
+                              selectedOutcomeId = oid;
+                              if (oid != null) {
+                                final out = provider.getOutcomeById(oid);
+                                if (out != null) {
+                                  titleCtrl.text = out.title;
+                                  selectedProjectId = out.projectId;
+                                }
+                              }
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                      TextField(
+                        controller: titleCtrl,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: 'عنوان فعالیت انجام‌شده',
+                          hintText: 'مثلاً: جلسه با کارفرما یا پیاده‌روی',
+                          filled: true,
+                          fillColor: AppColors.background,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      UnifiedProjectSelector(
+                        projects: provider.projects,
+                        realmFilter: selectedRealm,
+                        selectedProjectId: selectedProjectId,
+                        accentColor: realmColor,
+                        onSelected: (pid) =>
+                            setModalState(() => selectedProjectId = pid),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: AppColors.draftWarning.withAlpha(40),
-                              borderRadius: BorderRadius.circular(4),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.access_time_rounded,
+                                  size: 16),
+                              label: Text(
+                                'شروع: ${intl.DateFormat('HH:mm').format(start)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              onPressed: () async {
+                                final p = await showTimePicker(
+                                  context: ctx,
+                                  initialTime: TimeOfDay.fromDateTime(start),
+                                );
+                                if (p != null) {
+                                  setModalState(() {
+                                    start = DateTime(start.year, start.month,
+                                        start.day, p.hour, p.minute);
+                                    if (!end.isAfter(start)) {
+                                      end = start
+                                          .add(const Duration(minutes: 30));
+                                    }
+                                  });
+                                }
+                              },
                             ),
-                            child: const Text('برچسب: دستی',
-                                style: TextStyle(
-                                    fontSize: 10.5,
-                                    color: AppColors.draftWarning,
-                                    fontWeight: FontWeight.bold)),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: Text(
-                              'مدت: $durationMin دقیقه (${JalaliDate.formatWithWeekDay(start)})',
-                              style: const TextStyle(
-                                  fontSize: 11, color: AppColors.textSecondary),
+                            child: OutlinedButton.icon(
+                              icon:
+                                  const Icon(Icons.alarm_on_rounded, size: 16),
+                              label: Text(
+                                'پایان: ${intl.DateFormat('HH:mm').format(end)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              onPressed: () async {
+                                final p = await showTimePicker(
+                                  context: ctx,
+                                  initialTime: TimeOfDay.fromDateTime(end),
+                                );
+                                if (p != null) {
+                                  final candidate = DateTime(end.year,
+                                      end.month, end.day, p.hour, p.minute);
+                                  if (candidate.isAfter(start)) {
+                                    setModalState(() => end = candidate);
+                                  }
+                                }
+                              },
                             ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: AppColors.background,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: AppColors.draftWarning.withAlpha(60)),
+                        ),
+                        child: Text(
+                          'برچسب: دستی • مدت: $durationMin دقیقه (${JalaliDate.formatWithWeekDay(start)})',
+                          style: const TextStyle(
+                              fontSize: 11, color: AppColors.textSecondary),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -344,17 +414,19 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   child: const Text('انصراف'),
                 ),
                 FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: realmColor),
                   icon: const Icon(Icons.save_rounded, size: 16),
                   label: const Text('ثبت گزارش دستی'),
                   onPressed: () async {
                     if (titleCtrl.text.trim().isEmpty) return;
-                    await provider.createManualTaskLog(
+                    await provider.createManualTimeRecord(
+                      realm: selectedRealm,
+                      clockMode: selectedClock,
                       title: titleCtrl.text.trim(),
-                      macroProjectId: selectedMacroId,
-                      subProjectId: selectedSubId,
+                      outcomeId: selectedOutcomeId,
+                      projectId: selectedProjectId,
                       startTime: start,
                       endTime: end,
-                      entryType: entryType,
                     );
                     if (ctx.mounted) Navigator.of(ctx).pop();
                   },
@@ -364,15 +436,16 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           },
         );
       },
-    );
+    ).whenComplete(titleCtrl.dispose);
   }
 
   /// افزودن بلوک برنامه‌ریزی‌شده
   void _showAddBlockModal(BuildContext context, DateTime defaultStart) {
     final provider = context.read<AppStateProvider>();
     final titleCtrl = TextEditingController();
-    String? selectedMacroId;
-    String? selectedSubId;
+    AppRealm selectedRealm = provider.dashboardRealm;
+    String? selectedProjectId;
+    String? selectedOutcomeId;
     DateTime start = defaultStart;
     DateTime end = defaultStart.add(const Duration(hours: 1));
 
@@ -381,129 +454,205 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
+            final realmColor = selectedRealm == AppRealm.life
+                ? AppColors.lifeGreen
+                : AppColors.workBlue;
             final durationMin = end.difference(start).inMinutes;
+            final openOutcomes =
+                provider.getOpenOutcomes(realm: selectedRealm);
 
             return AlertDialog(
               backgroundColor: AppColors.surface,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(color: AppColors.border),
+                side: BorderSide(color: realmColor.withAlpha(110)),
               ),
               title: Row(
                 children: [
                   Container(
                     padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
-                      color: AppColors.focus.withAlpha(35),
+                      color: realmColor.withAlpha(35),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(Icons.event_note_rounded,
-                        color: AppColors.focus, size: 20),
+                    child: Icon(Icons.event_note_rounded,
+                        color: realmColor, size: 20),
                   ),
                   const SizedBox(width: 10),
-                  const Text('برنامه‌ریزی بلوک زمانی جدید',
-                      style:
-                          TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  const Text(
+                    'برنامه‌ریزی بلوک زمانی جدید',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
                 ],
               ),
               content: SizedBox(
-                width: 440,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: titleCtrl,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        labelText: 'عنوان برنامه (مثلاً: کدنویسی ماژول پرداخت)',
-                        filled: true,
-                        fillColor: AppColors.background,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
+                width: 450,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SegmentedButton<AppRealm>(
+                        style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          selectedBackgroundColor: realmColor.withAlpha(45),
+                          selectedForegroundColor: realmColor,
                         ),
-                        isDense: true,
+                        segments: const [
+                          ButtonSegment(
+                            value: AppRealm.work,
+                            icon: Icon(Icons.work_rounded, size: 15),
+                            label: Text('برنامه کار'),
+                          ),
+                          ButtonSegment(
+                            value: AppRealm.life,
+                            icon: Icon(Icons.spa_rounded, size: 15),
+                            label: Text('برنامه زندگی'),
+                          ),
+                        ],
+                        selected: {selectedRealm},
+                        onSelectionChanged: (s) => setModalState(() {
+                          selectedRealm = s.first;
+                          selectedOutcomeId = null;
+                          if (selectedProjectId != null) {
+                            final p = provider.getProjectById(selectedProjectId);
+                            if (p != null && p.realm != selectedRealm) {
+                              selectedProjectId = null;
+                            }
+                          }
+                        }),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    UnifiedProjectSelector(
-                      projects: provider.projects,
-                      selectedMacroId: selectedMacroId,
-                      selectedSubId: selectedSubId,
-                      onSelected: (mId, sId) {
-                        setModalState(() {
-                          selectedMacroId = mId;
-                          selectedSubId = sId;
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.access_time_rounded,
-                                size: 16),
-                            label: Text(
-                              'شروع: ${intl.DateFormat('HH:mm').format(start)}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            onPressed: () async {
-                              final p = await showTimePicker(
-                                context: ctx,
-                                initialTime: TimeOfDay.fromDateTime(start),
-                              );
-                              if (p != null) {
-                                setModalState(() {
-                                  start = DateTime(start.year, start.month,
-                                      start.day, p.hour, p.minute);
-                                  if (end.isBefore(start)) {
-                                    end = start.add(const Duration(hours: 1));
+                      const SizedBox(height: 10),
+                      if (openOutcomes.isNotEmpty) ...[
+                        DropdownButtonFormField<String?>(
+                          initialValue: selectedOutcomeId,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            labelText: 'کار/هدف متصل (اختیاری)',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          dropdownColor: AppColors.surfaceElevated,
+                          items: [
+                            const DropdownMenuItem(
+                                value: null,
+                                child: Text('بدون اتصال به کار باز')),
+                            ...openOutcomes.map((o) => DropdownMenuItem(
+                                  value: o.id,
+                                  child: Text(o.title,
+                                      overflow: TextOverflow.ellipsis),
+                                )),
+                          ],
+                          onChanged: (oid) {
+                            setModalState(() {
+                              selectedOutcomeId = oid;
+                              if (oid != null) {
+                                final out = provider.getOutcomeById(oid);
+                                if (out != null) {
+                                  if (titleCtrl.text.trim().isEmpty) {
+                                    titleCtrl.text = out.title;
                                   }
-                                });
+                                  selectedProjectId = out.projectId;
+                                }
                               }
-                            },
-                          ),
+                            });
+                          },
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.alarm_on_rounded, size: 16),
-                            label: Text(
-                              'پایان: ${intl.DateFormat('HH:mm').format(end)}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            onPressed: () async {
-                              final p = await showTimePicker(
-                                context: ctx,
-                                initialTime: TimeOfDay.fromDateTime(end),
-                              );
-                              if (p != null) {
-                                setModalState(() {
-                                  end = DateTime(end.year, end.month, end.day,
-                                      p.hour, p.minute);
-                                });
-                              }
-                            },
-                          ),
-                        ),
+                        const SizedBox(height: 10),
                       ],
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: AppColors.background,
-                        borderRadius: BorderRadius.circular(8),
+                      TextField(
+                        controller: titleCtrl,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: 'عنوان برنامه (مثلاً: کدنویسی یا ورزش)',
+                          filled: true,
+                          fillColor: AppColors.background,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          isDense: true,
+                        ),
                       ),
-                      child: Text(
-                        'مدت زمان برنامه‌ریزی: $durationMin دقیقه (${JalaliDate.formatWithWeekDay(start)})',
-                        style: const TextStyle(
-                            fontSize: 11, color: AppColors.textSecondary),
+                      const SizedBox(height: 10),
+                      UnifiedProjectSelector(
+                        projects: provider.projects,
+                        realmFilter: selectedRealm,
+                        selectedProjectId: selectedProjectId,
+                        accentColor: realmColor,
+                        onSelected: (pid) =>
+                            setModalState(() => selectedProjectId = pid),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.access_time_rounded,
+                                  size: 16),
+                              label: Text(
+                                'شروع: ${intl.DateFormat('HH:mm').format(start)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              onPressed: () async {
+                                final p = await showTimePicker(
+                                  context: ctx,
+                                  initialTime: TimeOfDay.fromDateTime(start),
+                                );
+                                if (p != null) {
+                                  setModalState(() {
+                                    start = DateTime(start.year, start.month,
+                                        start.day, p.hour, p.minute);
+                                    if (!end.isAfter(start)) {
+                                      end =
+                                          start.add(const Duration(hours: 1));
+                                    }
+                                  });
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              icon:
+                                  const Icon(Icons.alarm_on_rounded, size: 16),
+                              label: Text(
+                                'پایان: ${intl.DateFormat('HH:mm').format(end)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              onPressed: () async {
+                                final p = await showTimePicker(
+                                  context: ctx,
+                                  initialTime: TimeOfDay.fromDateTime(end),
+                                );
+                                if (p != null) {
+                                  final candidate = DateTime(end.year,
+                                      end.month, end.day, p.hour, p.minute);
+                                  if (candidate.isAfter(start)) {
+                                    setModalState(() => end = candidate);
+                                  }
+                                }
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: AppColors.background,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'مدت برنامه‌ریزی: $durationMin دقیقه (${JalaliDate.formatWithWeekDay(start)})',
+                          style: const TextStyle(
+                              fontSize: 11, color: AppColors.textSecondary),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -512,14 +661,17 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   child: const Text('انصراف'),
                 ),
                 FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: realmColor),
                   icon: const Icon(Icons.check_rounded, size: 16),
                   label: const Text('ثبت در تقویم'),
                   onPressed: () async {
                     if (titleCtrl.text.trim().isEmpty) return;
                     final block = ScheduledBlock(
                       id: const Uuid().v4(),
+                      realm: selectedRealm,
                       title: titleCtrl.text.trim(),
-                      projectId: selectedSubId ?? selectedMacroId,
+                      projectId: selectedProjectId,
+                      outcomeId: selectedOutcomeId,
                       startTime: start,
                       endTime: end,
                     );
@@ -532,15 +684,18 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           },
         );
       },
-    );
+    ).whenComplete(titleCtrl.dispose);
   }
 
   void _showBlockDetailsModal(
       BuildContext context, ScheduledBlock block, ProjectNode? project) {
     final provider = context.read<AppStateProvider>();
+    final fallbackColor =
+        block.isLife ? AppColors.lifeGreen : AppColors.workBlue;
     final color = project != null
         ? Color(int.parse(project.colorHex.replaceFirst('#', '0xFF')))
-        : AppColors.focus;
+        : fallbackColor;
+    final breadcrumb = provider.getProjectBreadcrumbString(block.projectId);
 
     showDialog<void>(
       context: context,
@@ -565,7 +720,23 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
-            if (block.source == 'gcal')
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: fallbackColor.withAlpha(32),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                block.realm.labelFa,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: fallbackColor,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            if (block.source == 'gcal') ...[
+              const SizedBox(width: 6),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
@@ -573,17 +744,17 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: const Text('Google Calendar',
-                    style:
-                        TextStyle(fontSize: 9.5, color: AppColors.textMuted)),
+                    style: TextStyle(fontSize: 9.5, color: AppColors.textMuted)),
               ),
+            ],
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (project != null) ...[
-              Text('پروژه: ${project.name}',
+            if (breadcrumb.isNotEmpty) ...[
+              Text('پروژه: $breadcrumb',
                   style: TextStyle(fontSize: 13, color: color)),
               const SizedBox(height: 6),
             ],
@@ -609,7 +780,6 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
             },
             child: const Text('حذف برنامه'),
           ),
-          const Spacer(),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('بستن'),
@@ -617,17 +787,10 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           FilledButton.icon(
             style: FilledButton.styleFrom(backgroundColor: color),
             icon: const Icon(Icons.play_arrow_rounded, size: 16),
-            label: const Text('شروع فوری کار روی این تسک'),
+            label: Text('شروع فوری (${block.realm.labelFa})'),
             onPressed: () async {
               Navigator.of(ctx).pop();
-              await provider.startInstantWork(
-                title: block.title,
-                macroProjectId: project?.isSubProject == true
-                    ? project?.parentId
-                    : project?.id,
-                subProjectId:
-                    project?.isSubProject == true ? project?.id : null,
-              );
+              await provider.activateScheduledBlockTask(block);
             },
           ),
         ],
@@ -635,15 +798,23 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     );
   }
 
-  void _showLogDetailsModal(
-      BuildContext context, TaskLogEntry log, ProjectNode? project) {
+  void _showRecordDetailsModal(
+    BuildContext context,
+    TimeRecord record,
+    ProjectNode? project,
+    OutcomeItem? outcome,
+  ) {
     final provider = context.read<AppStateProvider>();
-    final color = log.isBreakEntry
-        ? AppColors.breakTime
-        : (log.isStopwatch ? AppColors.stopwatch : AppColors.focus);
-    final isManual = log.tagIds.contains('دستی') ||
-        log.tagIds.contains('manual') ||
-        log.isEdited;
+    final color = record.isLife
+        ? AppColors.lifeGreen
+        : (record.isStopwatch ? AppColors.stopwatch : AppColors.workBlue);
+    final isManual = record.tagIds.contains('دستی') ||
+        record.tagIds.contains('manual') ||
+        record.isEdited;
+    final breadcrumb = provider.getProjectBreadcrumbString(record.projectId);
+    final notes = provider.getNotesForRecord(record.id);
+    final displayTitle = outcome?.title ??
+        (record.titleSnapshot.isEmpty ? 'تسک بدون عنوان' : record.titleSnapshot);
 
     showDialog<void>(
       context: context,
@@ -656,9 +827,9 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
         title: Row(
           children: [
             Icon(
-              log.isBreakEntry
-                  ? Icons.coffee_rounded
-                  : (log.isStopwatch
+              record.isLife
+                  ? Icons.spa_rounded
+                  : (record.isStopwatch
                       ? Icons.timer_outlined
                       : Icons.work_rounded),
               color: color,
@@ -667,83 +838,184 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                log.title.isEmpty ? 'تسک بدون عنوان' : log.title,
+                displayTitle,
                 style:
                     const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
               ),
             ),
-            if (isManual)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: color.withAlpha(35),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                record.realm.labelFa,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: color,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            if (isManual) ...[
+              const SizedBox(width: 4),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: AppColors.draftWarning.withAlpha(35),
                   borderRadius: BorderRadius.circular(4),
                 ),
-                child: const Text('ثبت دستی',
-                    style: TextStyle(
-                        fontSize: 9.5,
-                        color: AppColors.draftWarning,
-                        fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'دستی/ویرایش‌شده',
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    color: AppColors.draftWarning,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
+            ],
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (project != null) ...[
-              Text('پروژه: ${project.name}',
-                  style: TextStyle(fontSize: 13, color: color)),
-              const SizedBox(height: 6),
-            ],
-            Text(
-              'نوع: ${log.isBreakEntry ? "استراحت / زندگی" : (log.isStopwatch ? "کرنومتر آزاد" : "پومودورو هدفمند")}',
-              style: const TextStyle(
-                  fontSize: 12.5, color: AppColors.textSecondary),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (breadcrumb.isNotEmpty) ...[
+                  Text('پروژه: $breadcrumb',
+                      style: TextStyle(fontSize: 13, color: color)),
+                  const SizedBox(height: 6),
+                ],
+                Text(
+                  'قلمرو و ساعت: ${record.realm.labelFa} • ${record.clockMode.labelFa}',
+                  style: const TextStyle(
+                      fontSize: 12.5, color: AppColors.textSecondary),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'مدت واقعی: ${DateTimeUtils.formatDurationFa(record.isOpen ? provider.activeRecordElapsedSeconds : record.durationSeconds)}',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                if (record.earnedBreakSeconds > 0) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'استراحت ذخیره شده از این کار: ${DateTimeUtils.formatDurationFa(record.earnedBreakSeconds)}',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppColors.lifeGreen),
+                  ),
+                ],
+                const SizedBox(height: 4),
+                Text(
+                  'بازه زمانی: ${intl.DateFormat('HH:mm').format(record.startTime)} تا ${record.endTime != null ? intl.DateFormat('HH:mm').format(record.endTime!) : "اکنون (در حال اجرا)"}',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'تاریخ: ${JalaliDate.formatWithWeekDayAndYear(record.startTime)}',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary),
+                ),
+                if (record.editNote != null && record.editNote!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'توضیح ممیزی: ${record.editNote}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.draftWarning),
+                  ),
+                ],
+                if (notes.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  const Divider(color: AppColors.border),
+                  Text(
+                    'یادداشت‌های متصل به این جلسه (${notes.length}):',
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  ...notes.map((n) => Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceElevated,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              n.noteType.labelFa,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: n.noteType.color,
+                              ),
+                            ),
+                            if (n.content.isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Text(n.content,
+                                  style: const TextStyle(fontSize: 11.5)),
+                            ],
+                          ],
+                        ),
+                      )),
+                ],
+              ],
             ),
-            const SizedBox(height: 4),
-            Text(
-              'مدت واقعی: ${log.durationSeconds ~/ 60} دقیقه و ${log.durationSeconds % 60} ثانیه',
-              style: const TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'بازه زمانی: ${intl.DateFormat('HH:mm').format(log.startTime)} تا ${log.endTime != null ? intl.DateFormat('HH:mm').format(log.endTime!) : "اکنون"}',
-              style:
-                  const TextStyle(fontSize: 12, color: AppColors.textSecondary),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'تاریخ: ${JalaliDate.formatWithWeekDayAndYear(log.startTime)}',
-              style:
-                  const TextStyle(fontSize: 12, color: AppColors.textSecondary),
-            ),
-            if (log.editNote != null && log.editNote!.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                'توضیح ویرایش: ${log.editNote}',
-                style: const TextStyle(
-                    fontSize: 11, color: AppColors.draftWarning),
-              ),
-            ],
-          ],
+          ),
         ),
         actions: [
           TextButton(
-            style: TextButton.styleFrom(foregroundColor: AppColors.draftWarning),
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
             onPressed: () async {
-              await provider.deleteTaskLog(log.id);
+              await provider.deleteTimeRecord(record.id);
               if (ctx.mounted) Navigator.of(ctx).pop();
             },
-            child: const Text('حذف لاگ'),
+            child: const Text('حذف'),
           ),
-          const Spacer(),
+          // تبدیل یک‌کلیکی کار <-> زندگی (چالش ۲)
+          OutlinedButton.icon(
+            icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+            label: Text(
+              record.isWork ? 'تبدیل به زندگی' : 'تبدیل به کار',
+              style: const TextStyle(fontSize: 11.5),
+            ),
+            onPressed: () async {
+              await provider.swapSavedRecordRealm(record.id);
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'رکورد به قلمرو ${record.isWork ? "زندگی" : "کار"} تبدیل و بانک استراحت بروزرسانی شد.',
+                    ),
+                  ),
+                );
+              }
+            },
+          ),
+          if (!record.isOpen)
+            OutlinedButton.icon(
+              icon: const Icon(Icons.edit_outlined, size: 16),
+              label: const Text('ویرایش'),
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                showTimeRecordEditDialog(context, record);
+              },
+            ),
           FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: color),
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('متوجه شدم'),
+            child: const Text('بستن'),
           ),
         ],
       ),
@@ -753,38 +1025,32 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<AppStateProvider>();
+    final palette = provider.activePalette;
     final displayedDays = _displayedDays;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ۱. نوار ابزار و کنترل زوم تقویم
-          _buildCalendarToolbar(provider, displayedDays),
+          _buildCalendarToolbar(provider, palette, displayedDays),
           const SizedBox(height: 10),
 
           if (_calendarDisplayMode == CalendarDisplayMode.timesheet)
-            const Expanded(
-              child: ActivityLogTab(),
-            )
+            const Expanded(child: ActivityLogTab())
           else ...[
-            // ۲. هدر روزها (ثابت بالای اسکرولر)
-            _buildStickyDayHeaders(displayedDays),
-
-            // ۳. شبکه ساعت‌ها با امکان اسکرول همگام و زوم ماوس (Ctrl + Scroll)
+            _buildStickyDayHeaders(displayedDays, palette),
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
-                  color: AppColors.surface,
+                  color: palette.surface,
                   borderRadius: const BorderRadius.vertical(
                     bottom: Radius.circular(12),
                   ),
-                  border: Border.all(color: AppColors.border, width: 1.0),
+                  border: Border.all(color: palette.border, width: 1.0),
                 ),
                 child: Listener(
                   onPointerSignal: (pointerSignal) {
-                    // پشتیبانی از زوم روان با نگه داشتن کلید Ctrl و چرخ ماوس
                     if (HardwareKeyboard.instance.isControlPressed &&
                         pointerSignal is PointerScrollEvent) {
                       final zoomDelta = -pointerSignal.scrollDelta.dy * 0.08;
@@ -797,22 +1063,18 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // ستون ساعت‌ها (00:00 تا 23:00)
                         _buildTimeAxisColumn(),
-
-                        const VerticalDivider(
+                        VerticalDivider(
                           width: 1,
                           thickness: 1,
-                          color: AppColors.border,
+                          color: palette.border,
                         ),
-
-                        // ستون‌های روزها
                         Expanded(
                           child: Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: displayedDays.map((day) {
                               return Expanded(
-                                child: _buildDayColumn(day, provider),
+                                child: _buildDayColumn(day, provider, palette),
                               );
                             }).toList(),
                           ),
@@ -829,44 +1091,44 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     );
   }
 
-  /// نوار ابزار بالای تقویم با کنترل‌های زوم و ثبت دستی
   Widget _buildCalendarToolbar(
-      AppStateProvider provider, List<DateTime> displayedDays) {
+    AppStateProvider provider,
+    RealmPalette palette,
+    List<DateTime> displayedDays,
+  ) {
     return Card(
       elevation: 0,
-      color: AppColors.surface,
+      color: palette.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: AppColors.border),
+        side: BorderSide(color: palette.border),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Wrap(
-          spacing: 12,
+          spacing: 10,
           runSpacing: 8,
           alignment: WrapAlignment.spaceBetween,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // سوییچر حالت اصلی: نمای تقویم هوشمند / جدول تایم‌شیت و کارکرد
             SegmentedButton<CalendarDisplayMode>(
-              showSelectedIcon: true,
+              showSelectedIcon: false,
               style: SegmentedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                textStyle: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
+                selectedBackgroundColor: palette.accent.withAlpha(45),
+                textStyle:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
               segments: const [
                 ButtonSegment(
                   value: CalendarDisplayMode.grid,
-                  icon: Icon(Icons.calendar_view_week_rounded, size: 16),
+                  icon: Icon(Icons.calendar_view_week_rounded, size: 15),
                   label: Text('نمای تقویم'),
                 ),
                 ButtonSegment(
                   value: CalendarDisplayMode.timesheet,
-                  icon: Icon(Icons.table_chart_rounded, size: 16),
-                  label: Text('جدول تایم‌شیت و کارکرد'),
+                  icon: Icon(Icons.table_chart_rounded, size: 15),
+                  label: Text('جدول تایم‌شیت'),
                 ),
               ],
               selected: {_calendarDisplayMode},
@@ -875,7 +1137,33 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
             ),
 
             if (_calendarDisplayMode == CalendarDisplayMode.grid) ...[
-              // سوییچر نماها: روزانه، ۳ روزه، هفتگی
+              // فیلتر ۳ حالته کار | زندگی | ۲۴ ساعته
+              SegmentedButton<CalendarRealmFilter>(
+                showSelectedIcon: false,
+                style: SegmentedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  selectedBackgroundColor: palette.accent.withAlpha(45),
+                  textStyle: const TextStyle(fontSize: 11.5),
+                ),
+                segments: const [
+                  ButtonSegment(
+                    value: CalendarRealmFilter.workOnly,
+                    label: Text('فقط کار'),
+                  ),
+                  ButtonSegment(
+                    value: CalendarRealmFilter.lifeOnly,
+                    label: Text('فقط زندگی'),
+                  ),
+                  ButtonSegment(
+                    value: CalendarRealmFilter.allDay,
+                    label: Text('۲۴ ساعته'),
+                  ),
+                ],
+                selected: {_realmFilter},
+                onSelectionChanged: (set) =>
+                    setState(() => _realmFilter = set.first),
+              ),
+
               SegmentedButton<CalendarViewSpan>(
                 showSelectedIcon: false,
                 style: SegmentedButton.styleFrom(
@@ -885,179 +1173,173 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                 segments: const [
                   ButtonSegment(
                     value: CalendarViewSpan.day1,
-                    label: Text('روزانه (1D)'),
+                    label: Text('1D'),
                   ),
                   ButtonSegment(
                     value: CalendarViewSpan.day3,
-                    label: Text('۳ روزه (3D)'),
+                    label: Text('3D'),
                   ),
                   ButtonSegment(
                     value: CalendarViewSpan.day7,
-                    label: Text('هفتگی (7D)'),
+                    label: Text('7D'),
                   ),
                 ],
                 selected: {_span},
                 onSelectionChanged: (set) => setState(() => _span = set.first),
               ),
 
-            // ناوبری بازه زمانی و عنوان تاریخ شمسی
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.chevron_right_rounded),
-                  tooltip: 'بازه قبلی',
-                  onPressed: () => _navigate(-1),
-                  visualDensity: VisualDensity.compact,
-                ),
-                ActionChip(
-                  label: const Text('امروز', style: TextStyle(fontSize: 11.5)),
-                  backgroundColor: AppColors.surfaceElevated,
-                  side: const BorderSide(color: AppColors.border),
-                  onPressed: _goToToday,
-                ),
-                IconButton(
-                  icon: const Icon(Icons.chevron_left_rounded),
-                  tooltip: 'بازه بعدی',
-                  onPressed: () => _navigate(1),
-                  visualDensity: VisualDensity.compact,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  _formatRangeHeader(displayedDays),
-                  style: GoogleFonts.vazirmatn(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
+              Wrap(
+                spacing: 4,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.chevron_right_rounded),
+                    tooltip: 'بازه قبلی',
+                    onPressed: () => _navigate(-1),
+                    visualDensity: VisualDensity.compact,
                   ),
-                ),
-              ],
-            ),
+                  ActionChip(
+                    label: const Text('امروز', style: TextStyle(fontSize: 11)),
+                    backgroundColor: palette.surfaceElevated,
+                    side: BorderSide(color: palette.border),
+                    onPressed: _goToToday,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left_rounded),
+                    tooltip: 'بازه بعدی',
+                    onPressed: () => _navigate(1),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _formatRangeHeader(displayedDays),
+                    style: GoogleFonts.vazirmatn(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
 
-            // کنترل زوم محور زمان (سایز ساعت‌ها)
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppColors.border),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.remove_rounded, size: 14),
-                        tooltip: 'کاهش زوم ساعت‌ها',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () => _changeZoom(-15),
-                      ),
-                      InkWell(
-                        onTap: () {
-                          // تغییر چرخشی بین پیش‌فرض‌ها
-                          if (_hourHeight < 55) {
-                            _setZoomPreset(60);
-                          } else if (_hourHeight < 80) {
-                            _setZoomPreset(90);
-                          } else if (_hourHeight < 110) {
-                            _setZoomPreset(130);
-                          } else {
-                            _setZoomPreset(45);
-                          }
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          child: Text(
-                            'زوم: ${(_hourHeight / 60.0 * 100).round()}%',
-                            style: GoogleFonts.jetBrainsMono(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.remove_rounded, size: 14),
+                          tooltip: 'کاهش زوم ساعت‌ها',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _changeZoom(-15),
+                        ),
+                        InkWell(
+                          onTap: () {
+                            if (_hourHeight < 55) {
+                              _setZoomPreset(60);
+                            } else if (_hourHeight < 80) {
+                              _setZoomPreset(90);
+                            } else if (_hourHeight < 110) {
+                              _setZoomPreset(130);
+                            } else {
+                              _setZoomPreset(45);
+                            }
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 5),
+                            child: Text(
+                              '${(_hourHeight / 60.0 * 100).round()}%',
+                              style: GoogleFonts.jetBrainsMono(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.textPrimary,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.add_rounded, size: 14),
-                        tooltip: 'افزایش زوم ساعت‌ها (مشاهده تسک‌های ریز)',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () => _changeZoom(15),
-                      ),
-                    ],
+                        IconButton(
+                          icon: const Icon(Icons.add_rounded, size: 14),
+                          tooltip: 'افزایش زوم ساعت‌ها',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _changeZoom(15),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-
-                // دکمه ثبت گزارش کارکرد دستی
-                FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    backgroundColor: AppColors.draftWarning.withAlpha(30),
-                    foregroundColor: AppColors.draftWarning,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: AppColors.draftWarning.withAlpha(30),
+                      foregroundColor: AppColors.draftWarning,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    icon: const Icon(Icons.edit_calendar_rounded, size: 15),
+                    label: const Text('ثبت دستی +',
+                        style: TextStyle(fontSize: 11)),
+                    onPressed: () => _showAddManualLogModal(
+                      context,
+                      DateTime(_focusedDate.year, _focusedDate.month,
+                          _focusedDate.day, 12, 0),
+                    ),
                   ),
-                  icon: const Icon(Icons.edit_calendar_rounded, size: 15),
-                  label: const Text('گزارش دستی +',
-                      style: TextStyle(fontSize: 11.5)),
-                  onPressed: () => _showAddManualLogModal(
-                    context,
-                    DateTime(_focusedDate.year, _focusedDate.month,
-                        _focusedDate.day, 12, 0),
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: palette.accent.withAlpha(35),
+                      foregroundColor: palette.accent,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    icon: const Icon(Icons.add_rounded, size: 16),
+                    label: const Text('برنامه جدید',
+                        style: TextStyle(fontSize: 11)),
+                    onPressed: () => _showAddBlockModal(
+                      context,
+                      DateTime(_focusedDate.year, _focusedDate.month,
+                          _focusedDate.day, 9, 0),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 6),
-
-                // دکمه افزودن برنامه جدید
-                FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  IconButton(
+                    tooltip: 'همگام‌سازی با Google Calendar',
+                    icon: _isSyncing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.sync_rounded, size: 18),
+                    onPressed: _isSyncing
+                        ? null
+                        : () async {
+                            final messenger = ScaffoldMessenger.of(context);
+                            setState(() => _isSyncing = true);
+                            try {
+                              await provider.syncGoogleCalendar();
+                              messenger.showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                      'تقویم گوگل با موفقیت همگام‌سازی شد.'),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            } finally {
+                              if (mounted) setState(() => _isSyncing = false);
+                            }
+                          },
                   ),
-                  icon: const Icon(Icons.add_rounded, size: 16),
-                  label: const Text('برنامه جدید',
-                      style: TextStyle(fontSize: 11.5)),
-                  onPressed: () => _showAddBlockModal(
-                    context,
-                    DateTime(_focusedDate.year, _focusedDate.month,
-                        _focusedDate.day, 9, 0),
-                  ),
-                ),
-                const SizedBox(width: 6),
-
-                // دکمه همگام‌سازی گوگل کلندر
-                IconButton(
-                  tooltip: 'همگام‌سازی با Google Calendar',
-                  icon: _isSyncing
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.sync_rounded, size: 18),
-                  onPressed: _isSyncing
-                      ? null
-                      : () async {
-                          final messenger = ScaffoldMessenger.of(context);
-                          setState(() => _isSyncing = true);
-                          try {
-                            await provider.syncGoogleCalendar();
-                            messenger.showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                    'تقویم گوگل با موفقیت همگام‌سازی شد.'),
-                                duration: Duration(seconds: 2),
-                              ),
-                            );
-                          } finally {
-                            if (mounted) setState(() => _isSyncing = false);
-                          }
-                        },
-                ),
-              ],
-            ),
+                ],
+              ),
             ],
           ],
         ),
@@ -1065,15 +1347,14 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     );
   }
 
-  /// هدر روزها (ثابت بالای اسکرولر)
-  Widget _buildStickyDayHeaders(List<DateTime> days) {
+  Widget _buildStickyDayHeaders(List<DateTime> days, RealmPalette palette) {
     final now = DateTime.now();
 
     return Container(
       decoration: BoxDecoration(
-        color: AppColors.surfaceElevated,
+        color: palette.surfaceElevated,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-        border: Border.all(color: AppColors.border, width: 1.0),
+        border: Border.all(color: palette.border, width: 1.0),
       ),
       child: Row(
         children: [
@@ -1085,8 +1366,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   size: 15, color: AppColors.textMuted),
             ),
           ),
-          const VerticalDivider(
-              width: 1, thickness: 1, color: AppColors.border),
+          VerticalDivider(width: 1, thickness: 1, color: palette.border),
           Expanded(
             child: Row(
               children: days.map((day) {
@@ -1102,12 +1382,12 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     decoration: BoxDecoration(
                       border: Border(
                         left: BorderSide(
-                          color: AppColors.border.withAlpha(80),
+                          color: palette.border,
                           width: 0.8,
                         ),
                       ),
                       color: isToday
-                          ? AppColors.focus.withAlpha(20)
+                          ? palette.accent.withAlpha(24)
                           : Colors.transparent,
                     ),
                     child: Column(
@@ -1116,25 +1396,28 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Text(
-                              weekDayName,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: isToday
-                                    ? FontWeight.bold
-                                    : FontWeight.w600,
-                                color: isToday
-                                    ? AppColors.focus
-                                    : AppColors.textPrimary,
+                            Flexible(
+                              child: Text(
+                                weekDayName,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: isToday
+                                      ? FontWeight.bold
+                                      : FontWeight.w600,
+                                  color: isToday
+                                      ? palette.accent
+                                      : AppColors.textPrimary,
+                                ),
                               ),
                             ),
-                            if (isToday) ...[
+                            if (isToday && days.length <= 3) ...[
                               const SizedBox(width: 4),
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 5, vertical: 1),
                                 decoration: BoxDecoration(
-                                  color: AppColors.focus,
+                                  color: palette.accent,
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: const Text(
@@ -1154,7 +1437,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                           style: TextStyle(
                             fontSize: 10.5,
                             color: isToday
-                                ? AppColors.focus
+                                ? palette.accent
                                 : AppColors.textSecondary,
                             fontWeight: isToday ? FontWeight.bold : null,
                           ),
@@ -1171,7 +1454,6 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     );
   }
 
-  /// ستون ساعت‌ها (00:00 تا 23:00) بر اساس مقدار داینامیک _hourHeight
   Widget _buildTimeAxisColumn() {
     return SizedBox(
       width: _timeAxisWidth,
@@ -1195,9 +1477,11 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     );
   }
 
-  /// ستون هر روز شامل ۲ لاین موازی: برنامه‌ریزی (Planned) و عملکرد واقعی (Actual)
-  /// با پشتیبانی از کشیدن لبه‌ها و درگ تغییر زمان
-  Widget _buildDayColumn(DateTime day, AppStateProvider provider) {
+  Widget _buildDayColumn(
+    DateTime day,
+    AppStateProvider provider,
+    RealmPalette palette,
+  ) {
     final now = DateTime.now();
     final bool isToday = day.year == now.year &&
         day.month == now.month &&
@@ -1207,39 +1491,44 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     final dayEnd = dayStart.add(const Duration(days: 1));
 
     final plannedBlocks = provider.scheduledBlocks.where((b) {
-      return b.startTime.isBefore(dayEnd) && b.endTime.isAfter(dayStart);
+      return _matchesRealmFilter(b.realm) &&
+          b.startTime.isBefore(dayEnd) &&
+          b.endTime.isAfter(dayStart);
     }).toList();
 
-    final actualLogs = provider.taskLogs.where((l) {
-      final end = l.endTime ?? l.startTime;
-      return l.startTime.isBefore(dayEnd) && end.isAfter(dayStart);
+    final actualRecords = provider.timeRecords.where((r) {
+      if (!_matchesRealmFilter(r.realm)) return false;
+      final end = r.id == provider.activeRecord?.id
+          ? now
+          : (r.endTime ??
+              r.startTime.add(Duration(seconds: r.durationSeconds)));
+      return r.startTime.isBefore(dayEnd) && end.isAfter(dayStart);
     }).toList();
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final colWidth = constraints.maxWidth;
-        // تقسیم دقیق ستون روز به دو لاین مجزا بدون همپوشانی: عملکرد واقعی (چپ) و برنامه‌ریزی (راست)
         final double halfLaneWidth =
             ((colWidth - 5.0) / 2.0).clamp(16.0, 500.0);
-        final double actualLaneLeft = 1.5;
+        const double actualLaneLeft = 1.5;
         final double plannedLaneLeft = (colWidth / 2.0) + 1.0;
 
         return Container(
           decoration: BoxDecoration(
             border: Border(
               left: BorderSide(
-                color: AppColors.border.withAlpha(90),
+                color: palette.border,
                 width: 0.8,
               ),
             ),
-            color: isToday ? AppColors.focus.withAlpha(6) : Colors.transparent,
+            color:
+                isToday ? palette.accent.withAlpha(8) : Colors.transparent,
           ),
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
             onDoubleTapDown: (details) {
               final double clickedY = details.localPosition.dy;
-              final int hour =
-                  (clickedY / _hourHeight).floor().clamp(0, 23);
+              final int hour = (clickedY / _hourHeight).floor().clamp(0, 23);
               _showAddBlockModal(
                 context,
                 dayStart.add(Duration(hours: hour)),
@@ -1250,18 +1539,13 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
               child: Stack(
                 clipBehavior: Clip.hardEdge,
                 children: [
-                  // خط جداکننده محو بین لاین عملکرد و برنامه‌ریزی
                   Positioned(
                     top: 0,
                     bottom: 0,
                     left: colWidth / 2.0,
                     width: 0.8,
-                    child: Container(
-                      color: Colors.white.withAlpha(10),
-                    ),
+                    child: Container(color: Colors.white.withAlpha(10)),
                   ),
-
-                  // خطوط افقی ساعت‌ها و نیم‌ساعت‌ها
                   ...List.generate(24, (hour) {
                     final top = hour * _hourHeight;
                     return Positioned(
@@ -1284,9 +1568,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                       ),
                     );
                   }),
-
-                  // خط قرمز زمان حال
-                  if (isToday) ...[
+                  if (isToday)
                     Positioned(
                       top: (now.hour * _hourHeight) +
                           (now.minute * _hourHeight / 60.0),
@@ -1311,9 +1593,8 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                         ],
                       ),
                     ),
-                  ],
 
-                  // ۱. لاین برنامه‌ریزی (Planned Blocks) - سمت راست ستون
+                  // ۱. لاین برنامه‌ریزی (Planned Blocks)
                   ...plannedBlocks.map((b) {
                     final isThisActive = _activeDragId == b.id;
                     final effectiveStart =
@@ -1333,34 +1614,34 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                                 .inSeconds /
                             60.0)
                         .clamp(4.0, 1440.0);
-                    final double baseHeight =
-                        (durationMins * _hourHeight / 60.0).clamp(20.0, 24 * _hourHeight);
+                    final double baseHeight = (durationMins * _hourHeight / 60.0)
+                        .clamp(20.0, 24 * _hourHeight);
 
                     double renderedTop = baseTop;
                     double renderedHeight = baseHeight;
 
                     if (isThisActive) {
                       if (_isResizingBottom) {
-                        renderedHeight =
-                            (baseHeight + _dragAccumulatedDy).clamp(20.0, 24 * _hourHeight);
+                        renderedHeight = (baseHeight + _dragAccumulatedDy)
+                            .clamp(20.0, 24 * _hourHeight);
                       } else if (_isResizingTop) {
-                        renderedTop = (baseTop + _dragAccumulatedDy).clamp(0.0, 24 * _hourHeight);
-                        renderedHeight =
-                            (baseHeight - _dragAccumulatedDy).clamp(20.0, 24 * _hourHeight);
+                        renderedTop = (baseTop + _dragAccumulatedDy)
+                            .clamp(0.0, 24 * _hourHeight);
+                        renderedHeight = (baseHeight - _dragAccumulatedDy)
+                            .clamp(20.0, 24 * _hourHeight);
                       } else {
-                        renderedTop = (baseTop + _dragAccumulatedDy).clamp(0.0, 24 * _hourHeight);
+                        renderedTop = (baseTop + _dragAccumulatedDy)
+                            .clamp(0.0, 24 * _hourHeight);
                       }
                     }
 
-                    final project = provider.projects.cast<ProjectNode?>().firstWhere(
-                          (p) => p?.id == b.projectId,
-                          orElse: () => null,
-                        );
-
+                    final project = provider.getProjectById(b.projectId);
+                    final fallbackCol =
+                        b.isLife ? AppColors.lifeGreen : AppColors.workBlue;
                     final Color pColor = project != null
                         ? Color(int.parse(
                             project.colorHex.replaceFirst('#', '0xFF')))
-                        : AppColors.focus;
+                        : fallbackCol;
 
                     return Positioned(
                       top: renderedTop,
@@ -1386,9 +1667,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                           });
                         },
                         onDragUpdate: (dy) {
-                          setState(() {
-                            _dragAccumulatedDy += dy;
-                          });
+                          setState(() => _dragAccumulatedDy += dy);
                         },
                         onDragEnd: () async {
                           final deltaMinutes =
@@ -1400,10 +1679,10 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             _dragAccumulatedDy = 0.0;
                           });
                           if (deltaMinutes != 0) {
-                            final newStart = b.startTime
-                                .add(Duration(minutes: deltaMinutes));
-                            final newEnd = b.endTime
-                                .add(Duration(minutes: deltaMinutes));
+                            final newStart =
+                                b.startTime.add(Duration(minutes: deltaMinutes));
+                            final newEnd =
+                                b.endTime.add(Duration(minutes: deltaMinutes));
                             await provider.saveScheduledBlock(
                               b.copyWith(startTime: newStart, endTime: newEnd),
                             );
@@ -1427,9 +1706,10 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             _dragAccumulatedDy = 0.0;
                           });
                           if (deltaMinutes != 0) {
-                            final candidateEnd = b.endTime
-                                .add(Duration(minutes: deltaMinutes));
-                            if (candidateEnd.difference(b.startTime).inMinutes >= 5) {
+                            final candidateEnd =
+                                b.endTime.add(Duration(minutes: deltaMinutes));
+                            if (candidateEnd.difference(b.startTime).inMinutes >=
+                                5) {
                               await provider.saveScheduledBlock(
                                 b.copyWith(endTime: candidateEnd),
                               );
@@ -1440,13 +1720,16 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     );
                   }),
 
-                  // ۲. لاین عملکرد واقعی (Actual Task Logs) - سمت چپ ستون
-                  ...actualLogs.map((l) {
-                    final isThisActive = _activeDragId == l.id;
-                    final fullEnd = l.endTime ??
-                        l.startTime.add(Duration(seconds: l.durationSeconds));
+                  // ۲. لاین عملکرد واقعی (Actual TimeRecords)
+                  ...actualRecords.map((r) {
+                    final isThisActive = _activeDragId == r.id;
+                    final fullEnd = r.id == provider.activeRecord?.id
+                        ? now
+                        : (r.endTime ??
+                            r.startTime
+                                .add(Duration(seconds: r.durationSeconds)));
                     final effectiveStart =
-                        l.startTime.isBefore(dayStart) ? dayStart : l.startTime;
+                        r.startTime.isBefore(dayStart) ? dayStart : r.startTime;
                     final effectiveEnd =
                         fullEnd.isAfter(dayEnd) ? dayEnd : fullEnd;
 
@@ -1462,35 +1745,41 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                                 .inSeconds /
                             60.0)
                         .clamp(4.0, 1440.0);
-                    final double baseHeight =
-                        (durationMins * _hourHeight / 60.0).clamp(20.0, 24 * _hourHeight);
+                    final double baseHeight = (durationMins * _hourHeight / 60.0)
+                        .clamp(20.0, 24 * _hourHeight);
 
                     double renderedTop = baseTop;
                     double renderedHeight = baseHeight;
 
                     if (isThisActive) {
                       if (_isResizingBottom) {
-                        renderedHeight =
-                            (baseHeight + _dragAccumulatedDy).clamp(20.0, 24 * _hourHeight);
+                        renderedHeight = (baseHeight + _dragAccumulatedDy)
+                            .clamp(20.0, 24 * _hourHeight);
                       } else {
-                        renderedTop = (baseTop + _dragAccumulatedDy).clamp(0.0, 24 * _hourHeight);
+                        renderedTop = (baseTop + _dragAccumulatedDy)
+                            .clamp(0.0, 24 * _hourHeight);
                       }
                     }
 
-                    final project = provider.projects.cast<ProjectNode?>().firstWhere(
-                          (p) => p?.id == (l.subProjectId ?? l.macroProjectId),
-                          orElse: () => null,
-                        );
+                    final project = provider.getProjectById(r.projectId);
+                    final outcome = r.outcomeId != null
+                        ? provider.getOutcomeById(r.outcomeId!)
+                        : null;
 
-                    final Color col = l.isBreakEntry
-                        ? AppColors.breakTime
-                        : (l.isStopwatch
+                    final Color col = r.isLife
+                        ? AppColors.lifeGreen
+                        : (r.isStopwatch
                             ? AppColors.stopwatch
-                            : AppColors.focus);
+                            : AppColors.workBlue);
 
-                    final bool isManual = l.tagIds.contains('دستی') ||
-                        l.tagIds.contains('manual') ||
-                        l.isEdited;
+                    final bool isManual = r.tagIds.contains('دستی') ||
+                        r.tagIds.contains('manual') ||
+                        r.isEdited;
+
+                    final title = outcome?.title ??
+                        (r.titleSnapshot.isEmpty
+                            ? 'تسک بدون عنوان'
+                            : r.titleSnapshot);
 
                     return Positioned(
                       top: renderedTop,
@@ -1498,30 +1787,32 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                       width: halfLaneWidth,
                       height: renderedHeight,
                       child: _InteractiveCalendarBlock(
-                        id: l.id,
-                        title: l.title.isEmpty ? 'تسک بدون عنوان' : l.title,
+                        id: r.id,
+                        title: title,
                         startTime: effectiveStart,
                         endTime: effectiveEnd,
                         color: col,
                         isPlanned: false,
                         isManual: isManual,
-                        isBreak: l.isBreakEntry,
-                        isStopwatch: l.isStopwatch,
+                        isLife: r.isLife,
+                        isStopwatch: r.isStopwatch,
                         height: renderedHeight,
-                        onTap: () => _showLogDetailsModal(context, l, project),
+                        onTap: () => _showRecordDetailsModal(
+                            context, r, project, outcome),
                         onDragStart: () {
+                          if (r.isOpen) return;
                           setState(() {
-                            _activeDragId = l.id;
+                            _activeDragId = r.id;
                             _dragAccumulatedDy = 0.0;
                             _isResizingBottom = false;
                           });
                         },
                         onDragUpdate: (dy) {
-                          setState(() {
-                            _dragAccumulatedDy += dy;
-                          });
+                          if (r.isOpen) return;
+                          setState(() => _dragAccumulatedDy += dy);
                         },
                         onDragEnd: () async {
+                          if (r.isOpen) return;
                           final deltaMinutes =
                               ((_dragAccumulatedDy / _hourHeight * 60.0) / 5.0)
                                       .round() *
@@ -1531,12 +1822,14 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             _dragAccumulatedDy = 0.0;
                           });
                           if (deltaMinutes != 0) {
-                            final newStart = l.startTime
+                            final newStart = r.startTime
                                 .add(Duration(minutes: deltaMinutes));
-                            final newEnd = l.endTime?.add(Duration(minutes: deltaMinutes)) ??
-                                newStart.add(Duration(seconds: l.durationSeconds));
-                            await provider.updateTaskLogTimes(
-                              id: l.id,
+                            final newEnd = r.endTime
+                                    ?.add(Duration(minutes: deltaMinutes)) ??
+                                newStart
+                                    .add(Duration(seconds: r.durationSeconds));
+                            await provider.updateTimeRecordTimes(
+                              id: r.id,
                               newStartTime: newStart,
                               newEndTime: newEnd,
                               editNote: 'جابه‌جایی دستی در تقویم',
@@ -1544,13 +1837,15 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                           }
                         },
                         onResizeBottomUpdate: (dy) {
+                          if (r.isOpen) return;
                           setState(() {
-                            _activeDragId = l.id;
+                            _activeDragId = r.id;
                             _isResizingBottom = true;
                             _dragAccumulatedDy += dy;
                           });
                         },
                         onResizeBottomEnd: () async {
+                          if (r.isOpen) return;
                           final deltaMinutes =
                               ((_dragAccumulatedDy / _hourHeight * 60.0) / 5.0)
                                       .round() *
@@ -1561,16 +1856,17 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             _dragAccumulatedDy = 0.0;
                           });
                           if (deltaMinutes != 0) {
-                            final oldEnd = l.endTime ??
-                                l.startTime.add(Duration(seconds: l.durationSeconds));
+                            final oldEnd = r.endTime ??
+                                r.startTime
+                                    .add(Duration(seconds: r.durationSeconds));
                             final candidateEnd =
                                 oldEnd.add(Duration(minutes: deltaMinutes));
                             final newDurationSec =
-                                candidateEnd.difference(l.startTime).inSeconds;
+                                candidateEnd.difference(r.startTime).inSeconds;
                             if (newDurationSec >= 60) {
-                              await provider.updateTaskLogTimes(
-                                id: l.id,
-                                newStartTime: l.startTime,
+                              await provider.updateTimeRecordTimes(
+                                id: r.id,
+                                newStartTime: r.startTime,
                                 newEndTime: candidateEnd,
                                 editNote: 'تغییر بازه زمانی در تقویم',
                               );
@@ -1590,8 +1886,6 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
   }
 }
 
-/// کامپوننت تعاملی بلوک‌های تقویم با چینش تطبیقی بر اساس ارتفاع (بدون هرگونه سرریز متنی)
-/// و پشتیبانی از جابه‌جایی عمودی و کشیدن لبه پایینی برای تغییر اندازه
 class _InteractiveCalendarBlock extends StatelessWidget {
   final String id;
   final String title;
@@ -1600,7 +1894,7 @@ class _InteractiveCalendarBlock extends StatelessWidget {
   final Color color;
   final bool isPlanned;
   final bool isManual;
-  final bool isBreak;
+  final bool isLife;
   final bool isStopwatch;
   final double height;
   final VoidCallback onTap;
@@ -1618,7 +1912,7 @@ class _InteractiveCalendarBlock extends StatelessWidget {
     required this.color,
     this.isPlanned = false,
     this.isManual = false,
-    this.isBreak = false,
+    this.isLife = false,
     this.isStopwatch = false,
     required this.height,
     required this.onTap,
@@ -1645,12 +1939,13 @@ class _InteractiveCalendarBlock extends StatelessWidget {
           borderRadius: BorderRadius.circular(6),
           child: Container(
             decoration: BoxDecoration(
-              color: isPlanned
-                  ? color.withAlpha(30)
-                  : color.withAlpha(200),
+              color:
+                  isPlanned ? color.withAlpha(30) : color.withAlpha(205),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
-                color: isPlanned ? color.withAlpha(160) : Colors.white.withAlpha(50),
+                color: isPlanned
+                    ? color.withAlpha(160)
+                    : Colors.white.withAlpha(50),
                 width: 0.9,
               ),
               boxShadow: [
@@ -1663,7 +1958,6 @@ class _InteractiveCalendarBlock extends StatelessWidget {
             ),
             child: Stack(
               children: [
-                // محتوای کارت با چینش تطبیقی (بدون ایجاد خطای سرریز Overflow)
                 Positioned.fill(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(5),
@@ -1674,8 +1968,6 @@ class _InteractiveCalendarBlock extends StatelessWidget {
                     ),
                   ),
                 ),
-
-                // هندل تغییر اندازه انتهای بلوک در لبه پایینی
                 Positioned(
                   bottom: 0,
                   left: 0,
@@ -1711,7 +2003,6 @@ class _InteractiveCalendarBlock extends StatelessWidget {
     );
   }
 
-  /// چینش هوشمند محتوا با توجه به عرض و ارتفاع در دسترس جهت جلوگیری قطعی از Overflow
   Widget _buildAdaptiveContent(String timeStr) {
     final textColor = isPlanned ? color : Colors.white;
 
@@ -1721,7 +2012,6 @@ class _InteractiveCalendarBlock extends StatelessWidget {
         final isVeryNarrow = availableWidth < 52.0;
         final canShowManualBadge = availableWidth >= 66.0;
 
-        // ویجت برچسب دستی: در صورت باریک بودن ستون نقطه کهربایی، در صورت داشتن فضا برچسب متنی
         Widget? manualBadgeWidget;
         if (isManual) {
           if (canShowManualBadge) {
@@ -1752,12 +2042,22 @@ class _InteractiveCalendarBlock extends StatelessWidget {
           }
         }
 
+        if (availableWidth < 22.0) {
+          return Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: _buildLeadingIcon(size: 8),
+            ),
+          );
+        }
+
         if (height < 28.0) {
-          // تسک‌های بسیار کوتاه (کمتر از ۲۸ پیکسل): فقط یک ردیف فشرده
           return Row(
             children: [
-              _buildLeadingIcon(size: 9),
-              const SizedBox(width: 2),
+              if (availableWidth >= 26.0) ...[
+                _buildLeadingIcon(size: 9),
+                const SizedBox(width: 2),
+              ],
               Expanded(
                 child: Text(
                   title,
@@ -1770,18 +2070,19 @@ class _InteractiveCalendarBlock extends StatelessWidget {
                   ),
                 ),
               ),
-              if (manualBadgeWidget != null) ...[
+              if (manualBadgeWidget != null && availableWidth >= 32.0) ...[
                 const SizedBox(width: 2),
                 manualBadgeWidget,
               ],
             ],
           );
         } else if (height < 46.0) {
-          // تسک‌های متوسط (۲۸ تا ۴۶ پیکسل): عنوان و زمان در یک ردیف
           return Row(
             children: [
-              _buildLeadingIcon(size: 10),
-              const SizedBox(width: 3),
+              if (availableWidth >= 26.0) ...[
+                _buildLeadingIcon(size: 10),
+                const SizedBox(width: 3),
+              ],
               Expanded(
                 child: Text(
                   title,
@@ -1794,7 +2095,7 @@ class _InteractiveCalendarBlock extends StatelessWidget {
                   ),
                 ),
               ),
-              if (manualBadgeWidget != null) ...[
+              if (manualBadgeWidget != null && availableWidth >= 34.0) ...[
                 const SizedBox(width: 2),
                 manualBadgeWidget,
               ],
@@ -1817,7 +2118,6 @@ class _InteractiveCalendarBlock extends StatelessWidget {
             ],
           );
         } else {
-          // تسک‌های کامل (بیشتر از ۴۶ پیکسل): چینش دوخطی بدون سرریز
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -1875,8 +2175,8 @@ class _InteractiveCalendarBlock extends StatelessWidget {
         decoration: BoxDecoration(color: color, shape: BoxShape.circle),
       );
     }
-    final iconData = isBreak
-        ? Icons.coffee_rounded
+    final iconData = isLife
+        ? Icons.spa_rounded
         : (isStopwatch
             ? Icons.timer_outlined
             : Icons.check_circle_outline_rounded);
