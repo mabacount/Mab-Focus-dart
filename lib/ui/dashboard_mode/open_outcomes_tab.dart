@@ -761,8 +761,10 @@ class _OpenOutcomesTabState extends State<OpenOutcomesTab> {
                                           provider.reopenOutcome(outcome.id),
                                     ),
                                   IconButton(
-                                    tooltip: 'ویرایش کار و پروژه متصل',
-                                    icon: const Icon(Icons.edit_outlined,
+                                    tooltip:
+                                        'ویرایش یا انتقال کار به پروژه دیگر',
+                                    icon: const Icon(
+                                        Icons.drive_file_move_outlined,
                                         size: 18),
                                     onPressed: () => _showEditOutcomeDialog(
                                         context, provider, outcome),

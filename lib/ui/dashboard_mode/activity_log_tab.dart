@@ -15,6 +15,7 @@ import '../../providers/app_state_provider.dart';
 import '../../services/database_service.dart';
 import '../shared/unified_project_selector.dart';
 import '../shared/work_note_dialog.dart';
+import '../shared/edit_session_note_dialog.dart';
 
 /// دیالوگ ویرایش ممیزی‌دار یک رکورد زمانی (قابل استفاده در تایم‌شیت و تقویم)
 Future<void> showTimeRecordEditDialog(
@@ -26,6 +27,7 @@ Future<void> showTimeRecordEditDialog(
   final editNoteCtrl = TextEditingController(text: record.editNote ?? '');
   AppRealm selectedRealm = record.realm;
   String? selectedProjectId = record.projectId;
+  String? selectedOutcomeId = record.outcomeId;
   DateTime start = record.startTime;
   DateTime end = record.endTime ??
       record.startTime.add(Duration(seconds: record.durationSeconds));
@@ -109,7 +111,51 @@ Future<void> showTimeRecordEditDialog(
                     selectedProjectId: selectedProjectId,
                     accentColor: realmColor,
                     onSelected: (pid) =>
-                        setModalState(() => selectedProjectId = pid),
+                        setModalState(() {
+                          selectedProjectId = pid;
+                          if (selectedOutcomeId != null) {
+                            final oc = provider.getOutcomeById(selectedOutcomeId!);
+                            if (oc != null && pid != null && oc.projectId != pid) {
+                              selectedOutcomeId = null;
+                            }
+                          }
+                        }),
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String?>(
+                    key: ValueKey('$selectedProjectId-$selectedOutcomeId'),
+                    initialValue: (selectedOutcomeId != null &&
+                            provider.outcomes.any((o) =>
+                                o.id == selectedOutcomeId &&
+                                (selectedProjectId == null ||
+                                    o.projectId == selectedProjectId) &&
+                                o.realm == selectedRealm))
+                        ? selectedOutcomeId
+                        : null,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'کار / هدف متصل (انتقال یا اتصال)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('بدون کار اختصاصی (فقط پروژه)'),
+                      ),
+                      ...provider.outcomes
+                          .where((o) =>
+                              (selectedProjectId == null ||
+                                  o.projectId == selectedProjectId) &&
+                              o.realm == selectedRealm)
+                          .map((o) => DropdownMenuItem<String?>(
+                                value: o.id,
+                                child: Text(o.title,
+                                    overflow: TextOverflow.ellipsis),
+                              )),
+                    ],
+                    onChanged: (oid) =>
+                        setModalState(() => selectedOutcomeId = oid),
                   ),
                   const SizedBox(height: 10),
                   Row(
@@ -196,14 +242,21 @@ Future<void> showTimeRecordEditDialog(
                 final cleanTitle = titleCtrl.text.trim();
                 if (cleanTitle.isEmpty) return;
 
+                final effectiveOutcomeId = (selectedOutcomeId != null &&
+                        provider.outcomes.any((o) =>
+                            o.id == selectedOutcomeId &&
+                            (selectedProjectId == null ||
+                                o.projectId == selectedProjectId) &&
+                            o.realm == selectedRealm))
+                    ? selectedOutcomeId
+                    : null;
+
                 await provider.editTimeRecordWithAudit(
                   id: record.id,
                   newTitle: cleanTitle,
                   newRealm: selectedRealm,
-                  newOutcomeId:
-                      selectedRealm == record.realm ? record.outcomeId : null,
-                  clearOutcomeId:
-                      selectedRealm != record.realm || record.outcomeId == null,
+                  newOutcomeId: effectiveOutcomeId,
+                  clearOutcomeId: effectiveOutcomeId == null,
                   newProjectId: selectedProjectId,
                   clearProjectId: selectedProjectId == null,
                   newTagIds: record.tagIds,
@@ -1036,6 +1089,13 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                                           fontSize: 11,
                                           color: AppColors.textSecondary,
                                         ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.drive_file_move_outlined,
+                                            size: 18),
+                                        tooltip: 'ویرایش و انتقال یادداشت به پروژه یا کار دیگر',
+                                        onPressed: () =>
+                                            EditSessionNoteDialog.show(context, note),
                                       ),
                                       IconButton(
                                         icon: const Icon(Icons.delete_outline,

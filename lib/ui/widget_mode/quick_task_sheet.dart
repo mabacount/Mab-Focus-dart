@@ -600,6 +600,22 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
                       const SizedBox(width: 6),
                       OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 8),
+                        ),
+                        icon: const Icon(Icons.stop_rounded, size: 15),
+                        label: const Text('توقف',
+                            style: TextStyle(fontSize: 11)),
+                        onPressed: () async {
+                          await provider.stopTimer();
+                          await provider.toggleQuickMenuExpanded(false);
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.lifeGreen,
                           side: const BorderSide(color: AppColors.lifeGreen),
                           padding: const EdgeInsets.symmetric(

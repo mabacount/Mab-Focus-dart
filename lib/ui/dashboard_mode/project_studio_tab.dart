@@ -18,6 +18,7 @@ import '../../models/time_record.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/database_service.dart';
 import '../shared/unified_project_selector.dart';
+import '../shared/edit_session_note_dialog.dart';
 
 class ProjectStudioTab extends StatefulWidget {
   const ProjectStudioTab({super.key});
@@ -1420,27 +1421,316 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
           '${proj?.name ?? ""} • زمان کل: ${DateTimeUtils.formatDurationHms(totalSec)}',
           style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
         ),
-        trailing: o.isCompleted
-            ? TextButton(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.drive_file_move_outlined, size: 18),
+              tooltip: 'ویرایش و انتقال کار به پروژه دیگر',
+              onPressed: () =>
+                  _showEditOrTransferOutcomeDialog(context, provider, o),
+            ),
+            if (o.isCompleted)
+              TextButton(
                 onPressed: () => provider.reopenOutcome(o.id),
                 child: const Text('بازگشایی', style: TextStyle(fontSize: 11)),
               )
-            : (isActive
-                ? Text('فعال',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: palette.accent,
-                        fontWeight: FontWeight.bold))
-                : FilledButton.tonalIcon(
-                    style: FilledButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: palette.accent.withAlpha(35),
-                      foregroundColor: palette.accent,
+            else if (isActive)
+              Text('فعال',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: palette.accent,
+                      fontWeight: FontWeight.bold))
+            else
+              FilledButton.tonalIcon(
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  backgroundColor: palette.accent.withAlpha(35),
+                  foregroundColor: palette.accent,
+                ),
+                icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                label: const Text('شروع', style: TextStyle(fontSize: 11)),
+                onPressed: () => provider.startOrSwitchToOutcome(o),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showEditOrTransferOutcomeDialog(
+    BuildContext context,
+    AppStateProvider provider,
+    OutcomeItem outcome,
+  ) {
+    final titleCtrl = TextEditingController(text: outcome.title);
+    final descCtrl = TextEditingController(text: outcome.description);
+    String? selectedProjectId = outcome.projectId;
+    final palette = outcome.isLife ? RealmPalette.life : RealmPalette.work;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: palette.border),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.drive_file_move_rounded,
+                  color: palette.accent, size: 22),
+              const SizedBox(width: 8),
+              Text(
+                'ویرایش و انتقال کار (${outcome.realm.labelFa})',
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: titleCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'عنوان کار / نتیجه ملموس',
+                      border: OutlineInputBorder(),
+                      isDense: true,
                     ),
-                    icon: const Icon(Icons.play_arrow_rounded, size: 15),
-                    label: const Text('شروع', style: TextStyle(fontSize: 11)),
-                    onPressed: () => provider.startOrSwitchToOutcome(o),
-                  )),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: descCtrl,
+                    maxLines: 3,
+                    minLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: 'توضیحات (اختیاری)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('پروژه مقصد:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 6),
+                  UnifiedProjectSelector(
+                    projects: provider.projects,
+                    realmFilter: outcome.realm,
+                    selectedProjectId: selectedProjectId,
+                    accentColor: palette.accent,
+                    onSelected: (pid) =>
+                        setDialogState(() => selectedProjectId = pid),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'نکته: انتقال کار به پروژه دیگر به صورت خودکار تمام رکوردهای زمانی و یادداشت‌های متصل به آن را نیز به پروژه جدید منتقل می‌کند.',
+                    style: TextStyle(
+                        fontSize: 11, color: AppColors.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('انصراف'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: palette.accent),
+              icon: const Icon(Icons.save_rounded, size: 16),
+              label: const Text('ذخیره و انتقال'),
+              onPressed: () async {
+                final clean = titleCtrl.text.trim();
+                if (clean.isEmpty) return;
+                await provider.saveOutcome(
+                  outcome.copyWith(
+                    title: clean,
+                    description: descCtrl.text.trim(),
+                    projectId: selectedProjectId,
+                    clearProjectId: selectedProjectId == null,
+                  ),
+                );
+                if (ctx.mounted) Navigator.of(ctx).pop();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          'کار «$clean» و تمام رکوردهای متصل منتقل شدند.'),
+                      backgroundColor: palette.accent,
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(() {
+      titleCtrl.dispose();
+      descCtrl.dispose();
+    });
+  }
+
+  void _showTransferRecordDialog(
+    BuildContext context,
+    AppStateProvider provider,
+    TimeRecord record,
+  ) {
+    String? selectedProjectId = record.projectId;
+    String? selectedOutcomeId = record.outcomeId;
+    final palette = record.isLife ? RealmPalette.life : RealmPalette.work;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final availableOutcomes = selectedProjectId != null
+              ? provider.outcomes
+                  .where((o) => o.projectId == selectedProjectId)
+                  .toList()
+              : provider.outcomes;
+
+          return AlertDialog(
+            backgroundColor: palette.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: palette.border),
+            ),
+            title: Row(
+              children: [
+                Icon(Icons.drive_file_move_rounded,
+                    color: palette.accent, size: 22),
+                const SizedBox(width: 8),
+                const Text(
+                  'انتقال رکورد زمانی به پروژه دیگر',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('عنوان رکورد: ${record.titleSnapshot}',
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  const Text('پروژه مقصد:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 6),
+                  UnifiedProjectSelector(
+                    projects: provider.projects,
+                    realmFilter: record.realm,
+                    selectedProjectId: selectedProjectId,
+                    accentColor: palette.accent,
+                    onSelected: (pid) => setDialogState(() {
+                      selectedProjectId = pid;
+                      if (selectedOutcomeId != null) {
+                        final out =
+                            provider.getOutcomeById(selectedOutcomeId!);
+                        if (out != null && out.projectId != pid) {
+                          selectedOutcomeId = null;
+                        }
+                      }
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('کار / هدف متصل:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceElevated,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String?>(
+                        value: availableOutcomes
+                                .any((o) => o.id == selectedOutcomeId)
+                            ? selectedOutcomeId
+                            : null,
+                        isExpanded: true,
+                        dropdownColor: palette.surface,
+                        hint: const Text('بدون کار مشخص',
+                            style: TextStyle(
+                                fontSize: 12, color: AppColors.textMuted)),
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textPrimary),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('بدون کار مشخص',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                          ...availableOutcomes.map((o) =>
+                              DropdownMenuItem<String?>(
+                                value: o.id,
+                                child: Text(o.title,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12)),
+                              )),
+                        ],
+                        onChanged: (newOid) =>
+                            setDialogState(() => selectedOutcomeId = newOid),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('انصراف'),
+              ),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                    backgroundColor: palette.accent),
+                icon: const Icon(Icons.save_rounded, size: 16),
+                label: const Text('ذخیره و انتقال'),
+                onPressed: () async {
+                  await provider.transferTimeRecord(
+                    recordId: record.id,
+                    newProjectId: selectedProjectId,
+                    newOutcomeId: selectedOutcomeId,
+                  );
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: const Text(
+                            'رکورد زمانی با موفقیت به پروژه جدید منتقل شد.'),
+                        backgroundColor: palette.accent,
+                      ),
+                    );
+                  }
+                },
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1495,6 +1785,12 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
                       fontSize: 12, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'انتقال این رکورد به پروژه دیگر',
+                  icon: const Icon(Icons.drive_file_move_outlined, size: 17),
+                  onPressed: () =>
+                      _showTransferRecordDialog(context, provider, r),
+                ),
                 IconButton(
                   tooltip:
                       'تبدیل به ${r.isWork ? "زندگی" : "کار"} (چالش ۲)',
@@ -1610,6 +1906,53 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
                                   fontSize: 10.5,
                                   color: AppColors.textSecondary,
                                 ),
+                              ),
+                              const SizedBox(width: 6),
+                              IconButton(
+                                icon: const Icon(Icons.drive_file_move_outlined,
+                                    size: 16),
+                                tooltip:
+                                    'ویرایش و انتقال یادداشت به پروژه یا کار دیگر',
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () =>
+                                    EditSessionNoteDialog.show(context, note),
+                              ),
+                              const SizedBox(width: 6),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    size: 16, color: Colors.redAccent),
+                                tooltip: 'حذف یادداشت',
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () async {
+                                  final confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (c) => AlertDialog(
+                                      title: const Text('حذف یادداشت'),
+                                      content: const Text(
+                                          'آیا از حذف این یادداشت اطمینان دارید؟'),
+                                      actions: [
+                                        TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(c).pop(false),
+                                            child: const Text('انصراف')),
+                                        FilledButton(
+                                          style: FilledButton.styleFrom(
+                                              backgroundColor: Colors.redAccent),
+                                          onPressed: () =>
+                                              Navigator.of(c).pop(true),
+                                          child: const Text('حذف'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  if (confirm == true) {
+                                    await provider.deleteSessionNote(note.id);
+                                  }
+                                },
                               ),
                             ],
                           ),

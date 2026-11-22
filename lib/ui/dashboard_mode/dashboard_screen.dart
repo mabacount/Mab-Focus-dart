@@ -146,7 +146,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         provider.getOpenOutcomes(realm: provider.dashboardRealm).length;
 
     Color statusColor = AppColors.workBlue;
-    if (state.isOvertime) {
+    if (state.status == TimerStatus.idle) {
+      statusColor = AppColors.textMuted;
+    } else if (state.isOvertime) {
       statusColor = AppColors.overtime;
     } else if (state.isLife) {
       statusColor = AppColors.lifeGreen;
@@ -168,6 +170,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: palette.background,
       appBar: AppBar(
+        centerTitle: false,
         backgroundColor: palette.surface,
         elevation: 0,
         titleSpacing: isWide ? 16 : (isNarrow ? 6 : 10),
@@ -175,15 +178,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: palette.border),
         ),
-        title: Row(
-          children: [
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: AlignmentDirectional.centerStart,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             Container(
-              width: 10,
-              height: 10,
+              width: 8,
+              height: 8,
               decoration:
                   BoxDecoration(color: statusColor, shape: BoxShape.circle),
             ),
-            SizedBox(width: isNarrow ? 6 : 8),
+            SizedBox(width: isNarrow ? 4 : 8),
             if (screenWidth >= 540) ...[
               const Text(
                 'Mab-Focus v4.0',
@@ -193,23 +200,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
             Container(
               padding: EdgeInsets.symmetric(
-                  horizontal: isNarrow ? 6 : 8, vertical: 3),
+                  horizontal: isNarrow ? 4 : 8, vertical: 2.5),
               decoration: BoxDecoration(
                 color: palette.surfaceElevated,
                 borderRadius: BorderRadius.circular(6),
                 border: Border.all(color: palette.border),
               ),
               child: Text(
-                state.formattedDisplayTime,
+                state.status == TimerStatus.idle
+                    ? 'متوقف'
+                    : state.formattedDisplayTime,
                 style: GoogleFonts.jetBrainsMono(
-                  fontSize: isNarrow ? 12.0 : 13.5,
+                  fontSize: isNarrow ? 11.5 : 13.5,
                   fontWeight: FontWeight.bold,
                   color: statusColor,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ),
-            if (activeTitle.isNotEmpty && screenWidth >= 680) ...[
+            if (state.status == TimerStatus.idle && screenWidth >= 680) ...[
+              const SizedBox(width: 8),
+              const Text(
+                'تایمر متوقف است',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: AppColors.textMuted,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ] else if (activeTitle.isNotEmpty && screenWidth >= 680) ...[
               const SizedBox(width: 10),
               Flexible(
                 child: Text(
@@ -259,7 +278,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ],
         ),
-        actions: [
+      ),
+      actions: [
           // سوییچر اصلی داشبورد کار (آبی) / زندگی (سبز)
           _DashboardRealmToggle(
             activeRealm: provider.dashboardRealm,
@@ -328,20 +348,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(width: 6),
           ],
 
+          // سوییچ شروع / توقف کامل تایمر (نه کار و نه زندگی)
+          IconButton(
+            tooltip: state.status == TimerStatus.idle
+                ? 'شروع تایمر (${state.realm.labelFa})'
+                : 'توقف کامل تایمر (نه کار و نه زندگی)',
+            visualDensity: isNarrow ? VisualDensity.compact : null,
+            padding: isNarrow ? const EdgeInsets.all(2) : null,
+            constraints: isNarrow
+                ? const BoxConstraints(minWidth: 28, minHeight: 28)
+                : null,
+            icon: Icon(
+              state.status == TimerStatus.idle
+                  ? Icons.play_circle_fill_rounded
+                  : Icons.stop_circle_rounded,
+              color: state.status == TimerStatus.idle
+                  ? palette.accent
+                  : Colors.redAccent,
+              size: isNarrow ? 18 : 24,
+            ),
+            onPressed: () {
+              if (state.status == TimerStatus.idle) {
+                provider.startTimer();
+              } else {
+                provider.stopTimer();
+              }
+            },
+          ),
+
           // سوییچ فوری کار / زندگی تایمر جاری
           IconButton(
             tooltip: state.isWork
                 ? 'ورود به قلمرو زندگی (استراحت)'
                 : 'بازگشت به قلمرو کار',
             visualDensity: isNarrow ? VisualDensity.compact : null,
-            padding: isNarrow ? const EdgeInsets.all(4) : null,
+            padding: isNarrow ? const EdgeInsets.all(2) : null,
             constraints: isNarrow
-                ? const BoxConstraints(minWidth: 32, minHeight: 32)
+                ? const BoxConstraints(minWidth: 28, minHeight: 28)
                 : null,
             icon: Icon(
               state.isWork ? Icons.spa_rounded : Icons.work_rounded,
               color: state.isWork ? AppColors.lifeGreen : AppColors.workBlue,
-              size: isNarrow ? 19 : 22,
+              size: isNarrow ? 18 : 22,
             ),
             onPressed: provider.toggleWorkLife,
           ),
@@ -352,9 +400,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ? 'تغییر ساعت به پومودورو'
                 : 'تغییر ساعت به کرنومتر آزاد',
             visualDensity: isNarrow ? VisualDensity.compact : null,
-            padding: isNarrow ? const EdgeInsets.all(4) : null,
+            padding: isNarrow ? const EdgeInsets.all(2) : null,
             constraints: isNarrow
-                ? const BoxConstraints(minWidth: 32, minHeight: 32)
+                ? const BoxConstraints(minWidth: 28, minHeight: 28)
                 : null,
             icon: Icon(
               state.isStopwatch
@@ -363,7 +411,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: state.isStopwatch
                   ? AppColors.stopwatch
                   : AppColors.textSecondary,
-              size: isNarrow ? 19 : 21,
+              size: isNarrow ? 18 : 21,
             ),
             onPressed: provider.toggleClockType,
           ),

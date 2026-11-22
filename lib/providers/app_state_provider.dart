@@ -1200,7 +1200,71 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> togglePlayPause() async {
-    await toggleWorkLife();
+    await togglePlayStop();
+  }
+
+  /// توقف کامل تایمر (نه کار و نه زندگی ثبت نشود)
+  Future<void> stopTimer() {
+    return _synchronized(() async {
+      _ticker?.cancel();
+      // بستن رکورد فعال در صورت وجود بدون شروع خودکار برش بعدی
+      await _closeActiveRecordAndUpdateBank();
+      _phaseStartedAt = null;
+      _accumulatedPhaseSeconds = 0;
+      _lastErgonomicNudgeMessage = null;
+      _activeRecord = null;
+      _recordSliceStartedAt = null;
+      _accumulatedRecordSeconds = 0;
+      _activeRecordElapsedSeconds = 0;
+
+      _pomodoroState = _pomodoroState.copyWith(
+        status: TimerStatus.idle,
+        elapsedSeconds: 0,
+        overtimeSeconds: 0,
+        clearActiveRecord: true,
+      );
+
+      await _persistFlowmodoroState();
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+      }
+    });
+  }
+
+  /// شروع مجدد تایمر از حالت متوقف
+  Future<void> startTimer({AppRealm? targetRealm}) {
+    return _synchronized(() async {
+      if (_pomodoroState.status == TimerStatus.running ||
+          _pomodoroState.status == TimerStatus.overtime) {
+        return;
+      }
+      final realm = targetRealm ?? _pomodoroState.realm;
+      final now = DateTime.now();
+      _phaseStartedAt = now;
+      _accumulatedPhaseSeconds = 0;
+
+      await _startNewContinuousSliceAt(
+        startTime: now,
+        targetRealm: realm,
+      );
+      _pomodoroState = _pomodoroState.copyWith(
+        status: TimerStatus.running,
+      );
+      _ensureTickerRunning();
+      await _persistFlowmodoroState();
+      await refreshAllData();
+    });
+  }
+
+  /// جابجایی بین حالت اجرا و توقف کامل تایمر
+  Future<void> togglePlayStop() async {
+    if (_pomodoroState.status == TimerStatus.running ||
+        _pomodoroState.status == TimerStatus.overtime) {
+      await stopTimer();
+    } else {
+      await startTimer();
+    }
   }
 
   Future<void> toggleWorkLife() async {
@@ -2109,6 +2173,34 @@ class AppStateProvider extends ChangeNotifier {
     } else {
       await DatabaseService.instance.updateOutcome(outcome);
     }
+    if (_activeRecord != null && _activeRecord!.outcomeId == outcome.id) {
+      _activeRecord = _activeRecord!.copyWith(
+        projectId: outcome.projectId,
+        clearProjectId: outcome.projectId == null,
+        titleSnapshot: outcome.title,
+      );
+    }
+    await refreshAllData();
+    if (!isTestMode) {
+      await TxtLoggerService.instance.syncTxtFile();
+    }
+  }
+
+  /// انتقال مستقیم یک کار/هدف به پروژه جدید همراه با آبشار رکوردهای زمانی و یادداشت‌های متصل
+  Future<void> transferOutcome(String outcomeId, String? newProjectId) async {
+    final outcome = await DatabaseService.instance.getOutcomeById(outcomeId);
+    if (outcome == null) return;
+    final updated = outcome.copyWith(
+      projectId: newProjectId,
+      clearProjectId: newProjectId == null,
+    );
+    await DatabaseService.instance.updateOutcome(updated);
+    if (_activeRecord != null && _activeRecord!.outcomeId == outcomeId) {
+      _activeRecord = _activeRecord!.copyWith(
+        projectId: newProjectId,
+        clearProjectId: newProjectId == null,
+      );
+    }
     await refreshAllData();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
@@ -2144,6 +2236,60 @@ class AppStateProvider extends ChangeNotifier {
     await DatabaseService.instance.insertSessionNote(note);
     _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
     notifyListeners();
+    if (!isTestMode) {
+      await TxtLoggerService.instance.syncTxtFile();
+    }
+  }
+
+  Future<void> updateSessionNote(SessionNote note) async {
+    await DatabaseService.instance.updateSessionNote(note);
+    _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
+    notifyListeners();
+    if (!isTestMode) {
+      await TxtLoggerService.instance.syncTxtFile();
+    }
+  }
+
+  Future<void> transferSessionNote({
+    required String noteId,
+    String? newProjectId,
+    String? newOutcomeId,
+  }) async {
+    final note = _sessionNotes.where((n) => n.id == noteId).firstOrNull;
+    if (note == null) return;
+    final updated = note.copyWith(
+      projectId: newProjectId,
+      clearProjectId: newProjectId == null,
+      outcomeId: newOutcomeId,
+      clearOutcomeId: newOutcomeId == null,
+    );
+    await updateSessionNote(updated);
+  }
+
+  /// انتقال رکورد زمانی به پروژه یا کار دیگر
+  Future<void> transferTimeRecord({
+    required String recordId,
+    String? newProjectId,
+    String? newOutcomeId,
+  }) async {
+    final existing = await DatabaseService.instance.getTimeRecordById(recordId);
+    if (existing == null) return;
+    final updated = existing.copyWith(
+      projectId: newProjectId,
+      clearProjectId: newProjectId == null,
+      outcomeId: newOutcomeId,
+      clearOutcomeId: newOutcomeId == null,
+    );
+    await DatabaseService.instance.updateTimeRecord(updated);
+    if (_activeRecord != null && _activeRecord!.id == recordId) {
+      _activeRecord = _activeRecord!.copyWith(
+        projectId: newProjectId,
+        clearProjectId: newProjectId == null,
+        outcomeId: newOutcomeId,
+        clearOutcomeId: newOutcomeId == null,
+      );
+    }
+    await refreshAllData();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
     }
