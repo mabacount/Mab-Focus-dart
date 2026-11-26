@@ -7,6 +7,7 @@ import '../models/pomodoro_state.dart';
 import '../models/time_record.dart';
 import '../providers/app_state_provider.dart';
 import 'dashboard_mode/dashboard_screen.dart';
+import 'shared/nature_slideshow_overlay.dart';
 import 'widget_mode/floating_widget_view.dart';
 
 class AppShell extends StatelessWidget {
@@ -121,6 +122,10 @@ class AppShell extends StatelessWidget {
         final posture = provider.pomodoroState.windowPosture;
         final isWidgetMode =
             PlatformHelper.isDesktop && posture != WindowPosture.dashboard;
+
+        if (provider.shouldShowNatureSlideshow) {
+          return const NatureSlideshowOverlay();
+        }
 
         if (isWidgetMode) {
           return const FloatingWidgetView();

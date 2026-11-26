@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../core/constants.dart';
 import '../models/pomodoro_state.dart';
@@ -6,11 +8,56 @@ import '../models/project_node.dart';
 import '../models/scheduled_block.dart';
 import '../models/time_record.dart';
 import 'database_service.dart';
+import 'ecosystem_bridge_service.dart';
 
 class GCalSyncService {
   static final GCalSyncService instance = GCalSyncService._init();
+  static const Duration _requestTimeout = Duration(seconds: 15);
+
+  @visibleForTesting
+  http.Client? clientOverride;
 
   GCalSyncService._init();
+
+  Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) {
+    final client = clientOverride;
+    final future = client != null
+        ? client.get(uri, headers: headers)
+        : http.get(uri, headers: headers);
+    return future.timeout(_requestTimeout);
+  }
+
+  Future<http.Response> _post(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+  }) {
+    final client = clientOverride;
+    final future = client != null
+        ? client.post(uri, headers: headers, body: body)
+        : http.post(uri, headers: headers, body: body);
+    return future.timeout(_requestTimeout);
+  }
+
+  Future<http.Response> _patch(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+  }) {
+    final client = clientOverride;
+    final future = client != null
+        ? client.patch(uri, headers: headers, body: body)
+        : http.patch(uri, headers: headers, body: body);
+    return future.timeout(_requestTimeout);
+  }
+
+  Future<http.Response> _delete(Uri uri, {Map<String, String>? headers}) {
+    final client = clientOverride;
+    final future = client != null
+        ? client.delete(uri, headers: headers)
+        : http.delete(uri, headers: headers);
+    return future.timeout(_requestTimeout);
+  }
 
   Future<String?> _getToken() async {
     return await DatabaseService.instance
@@ -67,8 +114,10 @@ class GCalSyncService {
           '&orderBy=startTime',
         );
 
-        final response = await http
-            .get(uri, headers: {'Authorization': 'Bearer ${token.trim()}'});
+        final response = await _get(
+          uri,
+          headers: {'Authorization': 'Bearer ${token.trim()}'},
+        );
         if (response.statusCode != 200) continue;
 
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -107,7 +156,9 @@ class GCalSyncService {
             externalEventId: eventId,
           );
 
+          EcosystemBridgeService.instance.notifyInternalWrite();
           await DatabaseService.instance.insertScheduledBlock(block);
+          EcosystemBridgeService.instance.notifyInternalWrite();
           result.add(block);
         }
       } catch (_) {}
@@ -141,12 +192,12 @@ class GCalSyncService {
         final uri = Uri.parse(
           'https://www.googleapis.com/calendar/v3/calendars/${Uri.encodeComponent(planCalId)}/events/${Uri.encodeComponent(block.externalEventId!)}',
         );
-        res = await http.patch(uri, headers: headers, body: jsonEncode(body));
+        res = await _patch(uri, headers: headers, body: jsonEncode(body));
       } else {
         final uri = Uri.parse(
           'https://www.googleapis.com/calendar/v3/calendars/${Uri.encodeComponent(planCalId)}/events',
         );
-        res = await http.post(uri, headers: headers, body: jsonEncode(body));
+        res = await _post(uri, headers: headers, body: jsonEncode(body));
       }
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -156,9 +207,11 @@ class GCalSyncService {
           if (returnedId != null &&
               returnedId.isNotEmpty &&
               returnedId != block.externalEventId) {
+            EcosystemBridgeService.instance.notifyInternalWrite();
             await DatabaseService.instance.updateScheduledBlock(
               block.copyWith(externalEventId: returnedId),
             );
+            EcosystemBridgeService.instance.notifyInternalWrite();
           }
         } catch (_) {}
         return true;
@@ -167,6 +220,16 @@ class GCalSyncService {
     } catch (_) {
       return false;
     }
+  }
+
+  Future<void> _markRecordSyncFailed(TimeRecord record) async {
+    try {
+      EcosystemBridgeService.instance.notifyInternalWrite();
+      await DatabaseService.instance.updateTimeRecord(
+        record.copyWith(syncStatus: 'failed'),
+      );
+      EcosystemBridgeService.instance.notifyInternalWrite();
+    } catch (_) {}
   }
 
   /// ارسال رکوردهای زمانی کار و زندگی به تقویم گوگل (با ارث‌بری بازگشتی تقویم پروژه و PATCH بدون تکرار)
@@ -248,7 +311,7 @@ class GCalSyncService {
           final deleteUri = Uri.parse(
             'https://www.googleapis.com/calendar/v3/calendars/${Uri.encodeComponent(record.targetCalendarId!)}/events/${Uri.encodeComponent(existingEventId)}',
           );
-          await http.delete(deleteUri, headers: headers);
+          await _delete(deleteUri, headers: headers);
         } catch (_) {}
         existingEventId = null;
       }
@@ -258,17 +321,18 @@ class GCalSyncService {
         final uri = Uri.parse(
           'https://www.googleapis.com/calendar/v3/calendars/${Uri.encodeComponent(targetCalId)}/events/${Uri.encodeComponent(existingEventId)}',
         );
-        res = await http.patch(uri, headers: headers, body: jsonEncode(body));
+        res = await _patch(uri, headers: headers, body: jsonEncode(body));
       } else {
         final uri = Uri.parse(
           'https://www.googleapis.com/calendar/v3/calendars/${Uri.encodeComponent(targetCalId)}/events',
         );
-        res = await http.post(uri, headers: headers, body: jsonEncode(body));
+        res = await _post(uri, headers: headers, body: jsonEncode(body));
       }
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
         final decoded = jsonDecode(res.body) as Map<String, dynamic>;
         final eventId = decoded['id'] as String?;
+        EcosystemBridgeService.instance.notifyInternalWrite();
         await DatabaseService.instance.updateTimeRecord(
           record.copyWith(
             syncStatus: 'synced',
@@ -276,10 +340,13 @@ class GCalSyncService {
             targetCalendarId: targetCalId,
           ),
         );
+        EcosystemBridgeService.instance.notifyInternalWrite();
         return true;
       }
+      await _markRecordSyncFailed(record);
       return false;
     } catch (_) {
+      await _markRecordSyncFailed(record);
       return false;
     }
   }

@@ -1,8 +1,7 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants.dart';
-import '../../core/date_time_utils.dart';
 import '../../models/outcome_item.dart';
 import '../../models/pomodoro_state.dart';
 import '../../providers/app_state_provider.dart';
@@ -61,14 +60,6 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
     super.dispose();
   }
 
-  Color _parseHex(String hex) {
-    try {
-      return Color(int.parse(hex.replaceFirst('#', '0xFF')));
-    } catch (_) {
-      return AppColors.workBlue;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Consumer2<AppStateProvider, MusicPlayerService>(
@@ -84,12 +75,12 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
 
         final tags = provider.phaseTags;
         final openOutcomes = provider.getOpenOutcomes(realm: activeRealm);
+        final completedOutcomes =
+            provider.getCompletedOutcomes(realm: activeRealm);
+        final historicalRecords = provider.timeRecords
+            .where((r) => r.realm == activeRealm && !r.isUntitledDraft)
+            .toList();
         final activeOutcome = provider.activeOutcome;
-        final bool isTimerActive = state.status == TimerStatus.running ||
-            state.status == TimerStatus.overtime;
-
-        final int cycleMin = state.cycleWorkSeconds ~/ 60;
-        final int targetMin = state.cycleWorkTargetSeconds ~/ 60;
 
         return Container(
           padding: const EdgeInsets.all(11),
@@ -111,155 +102,78 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // ۱. نوار وضعیت قلمرو، بانک استراحت Flowmodoro و دکمه‌های Swap / Reset Cycle
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: realmColor.withAlpha(70)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: realmColor.withAlpha(35),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              'قلمرو ${activeRealm.labelFa}',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                                color: realmColor,
-                              ),
-                            ),
-                          ),
-                          const Spacer(),
-                          Tooltip(
-                            message:
-                                'تغییر ماهیت رکورد جاری (کار ↔ زندگی) از لحظه شروع',
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(6),
-                              onTap: () async {
-                                await provider.swapCurrentSliceRealm();
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 6, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: AppColors.edited.withAlpha(30),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                      color: AppColors.edited.withAlpha(100)),
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.swap_horiz_rounded,
-                                        size: 13, color: AppColors.edited),
-                                    SizedBox(width: 3),
-                                    Text(
-                                      'تبدیل آنی',
-                                      style: TextStyle(
-                                          fontSize: 9.5,
-                                          color: AppColors.edited,
-                                          fontWeight: FontWeight.bold),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Tooltip(
-                            message: 'ریست دستی چرخه ۱۰۰ دقیقه‌ای Flowmodoro',
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(6),
-                              onTap: () => provider.resetFlowmodoroCycle(),
-                              child: Container(
-                                padding: const EdgeInsets.all(3.5),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withAlpha(15),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: const Icon(Icons.restart_alt_rounded,
-                                    size: 14, color: AppColors.textSecondary),
-                              ),
-                            ),
-                          ),
-                        ],
+                // ۱. نوار وضعیت قلمرو فعال و دکمه تبدیل آنی
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: realmColor.withAlpha(35),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: realmColor.withAlpha(70)),
                       ),
-                      const SizedBox(height: 5),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 2,
-                        children: [
-                          Text(
-                            'چرخه: $cycleMin/$targetMinد',
-                            style: GoogleFonts.jetBrainsMono(
-                                fontSize: 9.5, color: AppColors.textSecondary),
-                          ),
-                          if (state.isLife && state.isInLongBreak)
-                            Text(
-                              'استراحت طولانی: ${DateTimeUtils.formatDurationHms(provider.activeOrPreviewBreakTargetSeconds)}',
-                              style: GoogleFonts.jetBrainsMono(
-                                  fontSize: 9.5, color: AppColors.golden),
-                            )
-                          else
-                            Text(
-                              'ذخیره کوتاه: ${DateTimeUtils.formatDurationHms(state.earnedShortBreakSeconds)}',
-                              style: GoogleFonts.jetBrainsMono(
-                                  fontSize: 9.5, color: AppColors.lifeGreen),
-                            ),
-                          if (state.breakDebtSeconds > 0)
-                            Text(
-                              'بدهی: -${DateTimeUtils.formatDurationHms(state.breakDebtSeconds)}',
-                              style: GoogleFonts.jetBrainsMono(
-                                  fontSize: 9.5, color: AppColors.overtime),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(3),
-                        child: LinearProgressIndicator(
-                          value: state.cycleProgress,
-                          minHeight: 3.5,
-                          backgroundColor: Colors.white10,
-                          valueColor: AlwaysStoppedAnimation<Color>(realmColor),
+                      child: Text(
+                        'قلمرو ${activeRealm.labelFa}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: realmColor,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        provider.breakTargetExplanationFa,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 9.5,
-                          color: AppColors.textSecondary,
+                    ),
+                    const Spacer(),
+                    Tooltip(
+                      message:
+                          'تغییر ماهیت رکورد جاری (کار ↔ زندگی) از لحظه شروع',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () async {
+                          await provider.swapCurrentSliceRealm();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.edited.withAlpha(30),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: AppColors.edited.withAlpha(100)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.swap_horiz_rounded,
+                                  size: 13, color: AppColors.edited),
+                              SizedBox(width: 4),
+                              Text(
+                                'تبدیل آنی',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: AppColors.edited,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
 
-                // ۲. جستجوی زنده فقط روی کارهای بازِ قلمرو فعال + ایجاد آنی
+                // ۲. جستجوی زنده روی کارهای باز، تکمیل‌شده قبلی و سوابق تاریخی + ایجاد آنی
                 SearchableTaskInput(
                   controller: _titleController,
                   openOutcomes: openOutcomes,
+                  completedOutcomes: completedOutcomes,
+                  historicalRecords: historicalRecords,
                   projects: provider.projects,
                   accentColor: realmColor,
                   hintText: activeRealm == AppRealm.life
                       ? 'جست‌وجوی کار زندگی (مثلاً خواب، ورزش) یا تایپ جدید...'
-                      : 'جست‌وجوی کار باز یا تایپ عنوان جدید...',
+                      : 'جست‌وجوی کار باز، قبلی یا تایپ عنوان جدید...',
                   onChanged: (text) {
                     if (_selectedOutcomeId != null) {
                       final matched = provider.getOutcomeById(_selectedOutcomeId!);
@@ -276,6 +190,19 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
                     await provider.startOrSwitchToOutcome(
                       outcome,
                       tagIds: _selectedTagIds.toList(),
+                    );
+                    await provider.toggleQuickMenuExpanded(false);
+                  },
+                  onSelectHistoricalRecord: (record) async {
+                    setState(() {
+                      _selectedOutcomeId = null;
+                      _selectedProjectId = record.projectId;
+                    });
+                    await provider.startOrSwitchToHistoricalRecord(
+                      record,
+                      tagIds: _selectedTagIds.isEmpty
+                          ? record.tagIds
+                          : _selectedTagIds.toList(),
                     );
                     await provider.toggleQuickMenuExpanded(false);
                   },
@@ -396,231 +323,495 @@ class _QuickTaskSheetState extends State<QuickTaskSheet> {
                   ),
                 ),
 
-                // ۵. لیست سریع کارهای بازِ قلمرو فعال با چک‌باکس تکمیل فوری
-                if (openOutcomes.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'کارهای بازِ ${activeRealm.labelFa} (${openOutcomes.length})',
-                        style: const TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textSecondary),
-                      ),
-                      const Text(
-                        'کلیک برای شروع / تیک برای انجام',
-                        style:
-                            TextStyle(fontSize: 9.5, color: AppColors.textMuted),
-                      ),
-                    ],
+                // ۵. تنظیمات و مدیریت پوشه‌های موسیقی و پخش تصادفی (جایگزین پنل کارهای باز و بانک استراحت)
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.border),
                   ),
-                  const SizedBox(height: 4),
-                  Container(
-                    constraints: const BoxConstraints(maxHeight: 112),
-                    decoration: BoxDecoration(
-                      color: AppColors.background,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      itemCount: openOutcomes.length,
-                      separatorBuilder: (_, __) =>
-                          const Divider(height: 1, color: AppColors.border),
-                      itemBuilder: (ctx, i) {
-                        final item = openOutcomes[i];
-                        final isCurrent = item.id == active?.outcomeId;
-                        final proj = provider.getProjectById(item.projectId);
-                        return InkWell(
-                          onTap: () async {
-                            await provider.startOrSwitchToOutcome(
-                              item,
-                              tagIds: _selectedTagIds.toList(),
-                            );
-                            await provider.toggleQuickMenuExpanded(false);
-                          },
-                          child: Padding(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // نوار عنوان تنظیمات موسیقی و دکمه افزودن پوشه
+                      Row(
+                        children: [
+                          Icon(Icons.music_note_rounded,
+                              size: 15, color: realmColor),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'تنظیمات موسیقی',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          const Spacer(),
+                          // نشان وضعیت پخش رندم / تصادفی
+                          Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 4),
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: music.isShuffle
+                                  ? AppColors.lifeGreen.withAlpha(35)
+                                  : Colors.white10,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: music.isShuffle
+                                    ? AppColors.lifeGreen.withAlpha(120)
+                                    : Colors.white24,
+                              ),
+                            ),
                             child: Row(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                InkWell(
-                                  onTap: () => provider
-                                      .markOutcomeCompleted(item.id),
-                                  child: Icon(
-                                    Icons.check_box_outline_blank_rounded,
-                                    size: 16,
-                                    color: realmColor,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    item.title,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: isCurrent
-                                          ? FontWeight.bold
-                                          : FontWeight.w500,
-                                      color: isCurrent
-                                          ? realmColor
-                                          : AppColors.textPrimary,
-                                    ),
-                                  ),
-                                ),
-                                if (proj != null) ...[
-                                  const SizedBox(width: 4),
-                                  Container(
-                                    width: 7,
-                                    height: 7,
-                                    decoration: BoxDecoration(
-                                      color: _parseHex(proj.colorHex),
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                ],
-                                const SizedBox(width: 4),
                                 Icon(
-                                  isCurrent
-                                      ? Icons.graphic_eq_rounded
-                                      : Icons.play_arrow_rounded,
-                                  size: 14,
-                                  color: realmColor,
+                                  Icons.shuffle_rounded,
+                                  size: 11,
+                                  color: music.isShuffle
+                                      ? AppColors.lifeGreen
+                                      : AppColors.textMuted,
+                                ),
+                                const SizedBox(width: 3),
+                                Text(
+                                  music.isShuffle ? 'پخش تصادفی' : 'پخش عادی',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: music.isShuffle
+                                        ? AppColors.lifeGreen
+                                        : AppColors.textMuted,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ],
                             ),
                           ),
-                        );
-                      },
-                    ),
-                  ),
-                ],
+                          const SizedBox(width: 4),
+                          // دکمه افزودن پوشه جدید
+                          Tooltip(
+                            message: 'افزودن پوشه موسیقی از سیستم',
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(6),
+                              onTap: () async {
+                                final folder = await FilePicker.platform
+                                    .getDirectoryPath();
+                                if (folder != null) {
+                                  await music.addFolder(folder);
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2.5),
+                                decoration: BoxDecoration(
+                                  color: realmColor.withAlpha(30),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: realmColor.withAlpha(100)),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.add_rounded,
+                                        size: 12, color: realmColor),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      'افزودن پوشه',
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        color: realmColor,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
 
-                // ۶. مینی‌پلیر موسیقی
-                if (music.tracks.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppColors.background,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(
-                            music.isPlaying
-                                ? Icons.pause_rounded
-                                : Icons.play_arrow_rounded,
-                            size: 16,
-                            color: realmColor,
+                      // انتخاب پوشه فعال
+                      if (music.playlists.isEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withAlpha(8),
+                            borderRadius: BorderRadius.circular(6),
                           ),
-                          onPressed: music.togglePlayPause,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            music.currentTrack?.title ?? 'موسیقی تمرکز',
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 11, color: AppColors.textSecondary),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.folder_off_outlined,
+                                  size: 13, color: AppColors.textMuted),
+                              SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'هیچ پوشه موسیقی ذخیره نشده است. با دکمه بالا یک پوشه انتخاب کنید.',
+                                  style: TextStyle(
+                                    fontSize: 9.5,
+                                    color: AppColors.textMuted,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.skip_next_rounded,
-                              size: 16, color: AppColors.textSecondary),
-                          onPressed: music.nextTrack,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
+                        )
+                      else ...[
+                        Row(
+                          children: [
+                            const Text(
+                              'پوشه فعال:',
+                              style: TextStyle(
+                                  fontSize: 10, color: AppColors.textSecondary),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Container(
+                                height: 28,
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 8),
+                                decoration: BoxDecoration(
+                                  color: AppColors.surface,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: AppColors.border),
+                                ),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    value: music.activePlaylist?.id,
+                                    isExpanded: true,
+                                    dropdownColor: AppColors.surfaceElevated,
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      color: AppColors.textPrimary,
+                                    ),
+                                    icon: const Icon(Icons.arrow_drop_down,
+                                        size: 16,
+                                        color: AppColors.textSecondary),
+                                    items: music.playlists.map((pl) {
+                                      return DropdownMenuItem<String>(
+                                        value: pl.id,
+                                        child: Text(
+                                          pl.name,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 10.5),
+                                        ),
+                                      );
+                                    }).toList(),
+                                    onChanged: (id) {
+                                      if (id != null) {
+                                        final target = music.playlists
+                                            .firstWhere((p) => p.id == id);
+                                        music.selectPlaylist(target);
+                                      }
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (music.activePlaylist != null) ...[
+                              const SizedBox(width: 4),
+                              Tooltip(
+                                message: 'حذف این پوشه از لیست',
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(6),
+                                  onTap: () async {
+                                    await music.deletePlaylist(
+                                        music.activePlaylist!.id);
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(4),
+                                    child: Icon(
+                                      Icons.delete_outline_rounded,
+                                      size: 15,
+                                      color: AppColors.overtime.withAlpha(180),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ],
-                    ),
+                      const SizedBox(height: 6),
+
+                      // کنترل‌های پلیر و نمایش نام آهنگ جاری
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceElevated,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.skip_previous_rounded,
+                                  size: 15, color: AppColors.textSecondary),
+                              onPressed: music.tracks.isNotEmpty
+                                  ? music.previousTrack
+                                  : null,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              tooltip: 'آهنگ قبلی (تصادفی)',
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: Icon(
+                                music.isPlaying
+                                    ? Icons.pause_rounded
+                                    : Icons.play_arrow_rounded,
+                                size: 17,
+                                color: realmColor,
+                              ),
+                              onPressed: music.tracks.isNotEmpty
+                                  ? music.togglePlayPause
+                                  : null,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              tooltip: music.isPlaying ? 'توقف' : 'پخش',
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: const Icon(Icons.skip_next_rounded,
+                                  size: 15, color: AppColors.textSecondary),
+                              onPressed: music.tracks.isNotEmpty
+                                  ? music.nextTrack
+                                  : null,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              tooltip: 'آهنگ بعدی (تصادفی)',
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                music.currentTrack?.title ??
+                                    (music.tracks.isEmpty
+                                        ? 'بدون آهنگ در این پوشه'
+                                        : 'آماده پخش'),
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ),
+                            if (music.tracks.isNotEmpty)
+                              Text(
+                                '${music.tracks.length} آهنگ',
+                                style: const TextStyle(
+                                  fontSize: 8.5,
+                                  color: AppColors.textMuted,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
                 const SizedBox(height: 10),
 
-                // ۷. دکمه‌های ثبت روی رکورد جاری یا شروع فعالیت بعدی
+                // ۷. دکمه‌های ۳‌گانه: انصراف | از قبل تا به حال | از حالا به بعد
                 Row(
                   children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: realmColor,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                        ),
-                        icon: const Icon(Icons.check_rounded, size: 16),
-                        label: Text(
-                          active != null
-                              ? 'ثبت روی رکورد جاری'
-                              : 'شروع فوری',
-                          style: const TextStyle(
-                              fontSize: 11, fontWeight: FontWeight.bold),
+                    // ۱. انصراف: تغییرات ذخیره نشوند و پنجره بسته شود
+                    Tooltip(
+                      message: 'بستن منو بدون ذخیره هیچ‌گونه تغییری',
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.textSecondary,
+                          side: const BorderSide(color: AppColors.border),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 9),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          visualDensity: VisualDensity.compact,
                         ),
                         onPressed: () async {
-                          if (active != null) {
-                            await provider.updateActiveRecordMetadata(
-                              title: _titleController.text,
-                              outcomeId: _selectedOutcomeId,
-                              clearOutcomeId: _selectedOutcomeId == null,
-                              projectId: _selectedProjectId,
-                              clearProjectId: _selectedProjectId == null,
-                              tagIds: _selectedTagIds.toList(),
-                            );
-                          } else {
-                            final rawTitle = _titleController.text.trim();
-                            if (rawTitle.isNotEmpty) {
-                              await provider.createAndStartOutcome(
-                                realm: activeRealm,
-                                title: rawTitle,
+                          _syncedRecordId = null;
+                          _syncFromProvider(provider);
+                          await provider.toggleQuickMenuExpanded(false);
+                        },
+                        child: const Text(
+                          'انصراف',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+
+                    // ۲. از قبل تا به حال: از زمان شروع این رکورد تا به حال به این نام ذخیره شود و ادامه یابد
+                    Expanded(
+                      child: Tooltip(
+                        message:
+                            'اعمال این عنوان و مشخصات برای کل رکورد جاری از لحظه شروع تا به حال و ادامه کار',
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: realmColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 9),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            elevation: 0,
+                          ),
+                          onPressed: () async {
+                            final cleanTitle = _titleController.text.trim();
+                            if (active != null) {
+                              String? effectiveOutcomeId = _selectedOutcomeId;
+                              if (effectiveOutcomeId != null) {
+                                final out =
+                                    provider.getOutcomeById(effectiveOutcomeId);
+                                if (out != null &&
+                                    cleanTitle.isNotEmpty &&
+                                    out.title != cleanTitle) {
+                                  effectiveOutcomeId = null;
+                                }
+                              }
+                              await provider.updateActiveRecordMetadata(
+                                title: cleanTitle,
+                                outcomeId: effectiveOutcomeId,
+                                clearOutcomeId: effectiveOutcomeId == null,
                                 projectId: _selectedProjectId,
+                                clearProjectId: _selectedProjectId == null,
                                 tagIds: _selectedTagIds.toList(),
                               );
                             } else {
-                              await provider.switchRealm(
-                                activeRealm,
-                                projectId: _selectedProjectId,
-                                tagIds: _selectedTagIds.toList(),
-                              );
+                              if (cleanTitle.isNotEmpty) {
+                                await provider.createAndStartOutcome(
+                                  realm: activeRealm,
+                                  title: cleanTitle,
+                                  projectId: _selectedProjectId,
+                                  tagIds: _selectedTagIds.toList(),
+                                );
+                              } else {
+                                await provider.switchRealm(
+                                  activeRealm,
+                                  projectId: _selectedProjectId,
+                                  tagIds: _selectedTagIds.toList(),
+                                );
+                              }
                             }
-                          }
-                          await provider.toggleQuickMenuExpanded(false);
-                        },
+                            await provider.toggleQuickMenuExpanded(false);
+                          },
+                          child: const FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'از قبل تا به حال',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                    if (isTimerActive && active != null) ...[
-                      const SizedBox(width: 6),
-                      OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.lifeGreen,
-                          side: const BorderSide(color: AppColors.lifeGreen),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 8),
+                    const SizedBox(width: 5),
+
+                    // ۳. از حالا به بعد: رکورد قبلی در این لحظه ذخیره شود و رکورد جدید با این عنوان شروع شود
+                    Expanded(
+                      child: Tooltip(
+                        message:
+                            'پایان و ذخیره رکورد قبلی در همین لحظه، و آغاز رکورد تازه از این لحظه به بعد',
+                        child: FilledButton.tonal(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: realmColor.withAlpha(45),
+                            foregroundColor: realmColor,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 9),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              side: BorderSide(
+                                color: realmColor.withAlpha(120),
+                                width: 1.0,
+                              ),
+                            ),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          onPressed: () async {
+                            final cleanTitle = _titleController.text.trim();
+                            if (active != null) {
+                              OutcomeItem? targetOutcome;
+                              if (_selectedOutcomeId != null) {
+                                final out =
+                                    provider.getOutcomeById(_selectedOutcomeId!);
+                                if (out != null &&
+                                    (cleanTitle.isEmpty ||
+                                        out.title == cleanTitle)) {
+                                  targetOutcome = out;
+                                }
+                              }
+                              await provider.switchRecordMidSession(
+                                newTitle: cleanTitle,
+                                projectId: _selectedProjectId,
+                                outcome: targetOutcome,
+                                tagIds: _selectedTagIds.toList(),
+                              );
+                              _titleController.clear();
+                            } else {
+                              if (cleanTitle.isNotEmpty) {
+                                await provider.createAndStartOutcome(
+                                  realm: activeRealm,
+                                  title: cleanTitle,
+                                  projectId: _selectedProjectId,
+                                  tagIds: _selectedTagIds.toList(),
+                                );
+                              } else {
+                                await provider.switchRealm(
+                                  activeRealm,
+                                  projectId: _selectedProjectId,
+                                  tagIds: _selectedTagIds.toList(),
+                                );
+                              }
+                            }
+                            await provider.toggleQuickMenuExpanded(false);
+                          },
+                          child: const FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'از حالا به بعد',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
                         ),
-                        icon: const Icon(Icons.skip_next_rounded, size: 15),
-                        label: const Text('برش بعدی',
-                            style: TextStyle(fontSize: 11)),
-                        onPressed: () async {
-                          final selectedOutcome = _selectedOutcomeId != null
-                              ? provider.getOutcomeById(_selectedOutcomeId!)
-                              : null;
-                          await provider.switchRecordMidSession(
-                            newTitle: _titleController.text,
-                            projectId: _selectedProjectId,
-                            outcome: selectedOutcome,
-                            tagIds: _selectedTagIds.toList(),
-                          );
-                          _titleController.clear();
-                          await provider.toggleQuickMenuExpanded(false);
-                        },
+                      ),
+                    ),
+                    if (state.status == TimerStatus.running ||
+                        state.status == TimerStatus.overtime) ...[
+                      const SizedBox(width: 4),
+                      Tooltip(
+                        message: 'توقف کامل تایمر (نه کار و نه زندگی)',
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.redAccent,
+                            side: const BorderSide(color: Colors.redAccent),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 9),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          onPressed: () async {
+                            await provider.stopTimer();
+                            await provider.toggleQuickMenuExpanded(false);
+                          },
+                          child: const Icon(Icons.stop_rounded, size: 16),
+                        ),
                       ),
                     ],
                   ],

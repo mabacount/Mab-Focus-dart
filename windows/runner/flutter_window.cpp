@@ -8,9 +8,6 @@
 
 namespace {
 
-constexpr UINT_PTR kPinVirtualDesktopTimerId = 1001;
-constexpr int kMaxPinRetries = 6;
-
 const CLSID CLSID_ImmersiveShell = { 0xC2F03A33, 0x21F5, 0x47FA, { 0xB4, 0xBB, 0x15, 0x63, 0x62, 0xA2, 0xF2, 0x39 } };
 const IID IID_IApplicationViewCollection = { 0x1841C6D7, 0x4F9D, 0x42C0, { 0xAF, 0x41, 0x87, 0x47, 0x53, 0x8F, 0x10, 0xE5 } };
 const CLSID CLSID_VirtualDesktopPinnedApps = { 0xB5A399E7, 0x1C87, 0x46B8, { 0x88, 0xE9, 0xFC, 0x57, 0x47, 0xB1, 0x71, 0xBD } };
@@ -96,6 +93,18 @@ bool PinWindowToAllVirtualDesktops(HWND hwnd) {
   return pinned;
 }
 
+DWORD WINAPI PinVirtualDesktopWorker(LPVOID param) {
+  HWND hwnd = static_cast<HWND>(param);
+  PinWindowToAllVirtualDesktops(hwnd);
+  return 0;
+}
+
+void SchedulePinWindowToAllVirtualDesktops(HWND hwnd) {
+  if (!hwnd || !::IsWindow(hwnd)) return;
+  ::QueueUserWorkItem(PinVirtualDesktopWorker, static_cast<PVOID>(hwnd),
+                      WT_EXECUTEDEFAULT);
+}
+
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -128,8 +137,6 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   HWND hwnd = GetHandle();
-  // تلاش اولیه بلافاصله پس از دریافت HWND در OnCreate
-  PinWindowToAllVirtualDesktops(hwnd);
 
   vdesktop_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -141,33 +148,17 @@ bool FlutterWindow::OnCreate() {
       [hwnd](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
         if (call.method_name().compare("pinToAllDesktops") == 0) {
-          bool success = PinWindowToAllVirtualDesktops(hwnd);
-          result->Success(flutter::EncodableValue(success));
+          SchedulePinWindowToAllVirtualDesktops(hwnd);
+          result->Success(flutter::EncodableValue(true));
         } else {
           result->NotImplemented();
         }
       });
 
-  flutter_controller_->engine()->SetNextFrameCallback([this, hwnd]() {
-    this->Show();
-    if (!PinWindowToAllVirtualDesktops(hwnd)) {
-      pin_retry_count_ = 0;
-      ::SetTimer(hwnd, kPinVirtualDesktopTimerId, 250, nullptr);
-    }
-  });
-
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
-  flutter_controller_->ForceRedraw();
-
   return true;
 }
 
 void FlutterWindow::OnDestroy() {
-  if (HWND hwnd = GetHandle()) {
-    ::KillTimer(hwnd, kPinVirtualDesktopTimerId);
-  }
   if (vdesktop_channel_) {
     vdesktop_channel_ = nullptr;
   }
@@ -193,16 +184,6 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   switch (message) {
-    case WM_TIMER:
-      if (wparam == kPinVirtualDesktopTimerId) {
-        ++pin_retry_count_;
-        if (PinWindowToAllVirtualDesktops(hwnd) ||
-            pin_retry_count_ >= kMaxPinRetries) {
-          ::KillTimer(hwnd, kPinVirtualDesktopTimerId);
-        }
-        return 0;
-      }
-      break;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;

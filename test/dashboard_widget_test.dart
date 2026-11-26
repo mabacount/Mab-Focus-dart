@@ -161,7 +161,7 @@ void main() {
     await tester.tap(find.text('یادداشت'));
     await tester.pump(const Duration(milliseconds: 200));
 
-    // Open More sheet and visit Studio, Capacity Thieves, Untitled Inbox, Settings
+      // Open More sheet and visit Studio, Capacity Thieves, Untitled Inbox, Settings
     for (final itemLabel in [
       'استودیوی پروژه‌های کار',
       'سند ظرفیت و سارقان زمان',
@@ -173,5 +173,91 @@ void main() {
       await tester.tap(find.text(itemLabel).last);
       await tester.pumpAndSettle();
     }
+  });
+
+  testWidgets('Desktop (1280x800) shows Stop button and transitions to idle',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final result = await tester.runAsync(createSeededProvider);
+    final (db, provider) = result!;
+    addTearDown(() async {
+      provider.dispose();
+      DatabaseService.instance.resetForTest();
+      await tester.runAsync(() => db.close());
+    });
+
+    await tester.pumpWidget(buildHarness(provider, const Size(1280, 800)));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final stopBtn = find.byKey(const Key('dashboard_stop_recording_button'));
+    expect(stopBtn, findsOneWidget);
+    expect(find.text('توقف ضبط'), findsOneWidget);
+    expect(
+      find.byKey(const Key('dashboard_banner_stop_button')),
+      findsOneWidget,
+    );
+
+    await tester.tap(stopBtn);
+    for (int i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      if (provider.pomodoroState.status == TimerStatus.idle &&
+          find.text('متوقف').evaluate().isNotEmpty) {
+        break;
+      }
+    }
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(provider.pomodoroState.status, TimerStatus.idle);
+    expect(provider.activeRecord, isNull);
+    expect(find.text('متوقف'), findsOneWidget);
+    expect(find.text('تایمر متوقف است'), findsOneWidget);
+    expect(
+      find.byKey(const Key('dashboard_stop_recording_button')),
+      findsNothing,
+    );
+  });
+
+  testWidgets(
+      'Narrow (390x844) shows Stop button with zero overflow and stops session',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final result = await tester.runAsync(createSeededProvider);
+    final (db, provider) = result!;
+    addTearDown(() async {
+      provider.dispose();
+      DatabaseService.instance.resetForTest();
+      await tester.runAsync(() => db.close());
+    });
+
+    await tester.pumpWidget(buildHarness(provider, const Size(390, 844)));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final stopBtn = find.byKey(const Key('dashboard_stop_recording_button'));
+    expect(stopBtn, findsOneWidget);
+    expect(find.text('توقف'), findsOneWidget);
+
+    await tester.tap(stopBtn);
+    for (int i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      if (provider.pomodoroState.status == TimerStatus.idle &&
+          find.text('متوقف').evaluate().isNotEmpty) {
+        break;
+      }
+    }
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(provider.pomodoroState.status, TimerStatus.idle);
+    expect(provider.activeRecord, isNull);
+    expect(find.text('متوقف'), findsOneWidget);
   });
 }

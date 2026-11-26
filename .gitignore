@@ -13,7 +13,19 @@ build/
 *.swp
 *.iml
 
-# OS
+# OS & Logs & Databases & Shortcuts
 Thumbs.db
 Desktop.ini
 .DS_Store
+*.log
+*.lnk
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.*
+GEMINI.md

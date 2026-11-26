@@ -47,7 +47,23 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
     if (_isCheckingSnap || !mounted) return;
 
     final provider = context.read<AppStateProvider>();
-    if (provider.pomodoroState.windowPosture != WindowPosture.floatingCircle) {
+    final posture = provider.pomodoroState.windowPosture;
+
+    if (posture == WindowPosture.edgeDockedLeft ||
+        posture == WindowPosture.edgeDockedRight) {
+      _isCheckingSnap = true;
+      final snapPosture = await PlatformHelper.checkEdgeSnapCondition();
+      if (snapPosture == null && mounted) {
+        await provider.setWindowPosture(
+          WindowPosture.floatingCircle,
+          expanded: provider.isQuickMenuExpanded,
+        );
+      }
+      _isCheckingSnap = false;
+      return;
+    }
+
+    if (posture != WindowPosture.floatingCircle) {
       return;
     }
     if (provider.isQuickMenuExpanded) return;
@@ -70,9 +86,9 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
   void _onMouseExit() {
     _hoverDebounceTimer?.cancel();
     _hoverDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
       final provider = context.read<AppStateProvider>();
-      if (mounted &&
-          _isHovered &&
+      if (_isHovered &&
           !provider.isQuickMenuExpanded &&
           !provider.isWorkNoteOpen) {
         setState(() => _isHovered = false);
@@ -81,6 +97,9 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
   }
 
   Color _resolveRingColor(PomodoroState state, {bool isGolden = false}) {
+    if (state.status == TimerStatus.idle) {
+      return AppColors.textMuted;
+    }
     // اضافه‌زمان (چه در کار و چه در استراحت/زندگی) با رنگ هشدار نارنجی-قرمز متمایز می‌شود
     if (state.isOvertime) {
       return AppColors.overtime;
@@ -127,33 +146,47 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                   expanded: provider.isQuickMenuExpanded,
                 );
               },
-              child: Container(
-                width: 18,
-                height: 140,
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.horizontal(
-                    right: state.windowPosture == WindowPosture.edgeDockedLeft
-                        ? const Radius.circular(9)
-                        : Radius.zero,
-                    left: state.windowPosture == WindowPosture.edgeDockedRight
-                        ? const Radius.circular(9)
-                        : Radius.zero,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  provider.setWindowPosture(
+                    WindowPosture.floatingCircle,
+                    expanded: provider.isQuickMenuExpanded,
+                  );
+                },
+                onPanStart: (_) {
+                  if (PlatformHelper.isDesktop) {
+                    windowManager.startDragging();
+                  }
+                },
+                child: Container(
+                  width: 18,
+                  height: 140,
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.horizontal(
+                      right: state.windowPosture == WindowPosture.edgeDockedLeft
+                          ? const Radius.circular(9)
+                          : Radius.zero,
+                      left: state.windowPosture == WindowPosture.edgeDockedRight
+                          ? const Radius.circular(9)
+                          : Radius.zero,
+                    ),
+                    border:
+                        Border.all(color: ringColor.withAlpha(180), width: 1.5),
                   ),
-                  border:
-                      Border.all(color: ringColor.withAlpha(180), width: 1.5),
-                ),
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: FractionallySizedBox(
-                    heightFactor: state.isOvertime || state.isStopwatch
-                        ? 1.0
-                        : state.progress.clamp(0.08, 1.0),
-                    widthFactor: 1.0,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: ringColor,
-                        borderRadius: BorderRadius.circular(6),
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: FractionallySizedBox(
+                      heightFactor: state.isOvertime || state.isStopwatch
+                          ? 1.0
+                          : state.progress.clamp(0.08, 1.0),
+                      widthFactor: 1.0,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: ringColor,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
                       ),
                     ),
                   ),
@@ -176,6 +209,11 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
           onExit: (_) => _onMouseExit(),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (state.status == TimerStatus.idle) {
+                provider.startTimer();
+              }
+            },
             onPanStart: (_) {
               if (PlatformHelper.isDesktop) {
                 windowManager.startDragging();
@@ -207,9 +245,11 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                     height: 70,
                     child: CustomPaint(
                       painter: _CompactRingPainter(
-                        progress: state.isOvertime || state.isStopwatch
-                            ? 1.0
-                            : state.progress,
+                        progress: state.status == TimerStatus.idle
+                            ? 0.0
+                            : (state.isOvertime || state.isStopwatch
+                                ? 1.0
+                                : state.progress),
                         ringColor: ringColor,
                       ),
                     ),
@@ -218,21 +258,27 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        state.formattedDisplayTime,
+                        state.status == TimerStatus.idle
+                            ? 'متوقف'
+                            : state.formattedDisplayTime,
                         style: GoogleFonts.jetBrainsMono(
-                          fontSize: state.isOvertime ||
-                                  (state.isStopwatch &&
-                                      state.elapsedSeconds >= 3600)
+                          fontSize: state.status == TimerStatus.idle
                               ? 13.5
-                              : 16.0,
+                              : (state.isOvertime ||
+                                      (state.isStopwatch &&
+                                          state.elapsedSeconds >= 3600)
+                                  ? 13.5
+                                  : 16.0),
                           fontWeight: FontWeight.w700,
-                          color: state.isOvertime
-                              ? AppColors.overtime
-                              : (state.isLife
-                                  ? AppColors.lifeGreen
-                                  : (isGolden
-                                      ? AppColors.golden
-                                      : Colors.white)),
+                          color: state.status == TimerStatus.idle
+                              ? AppColors.textMuted
+                              : (state.isOvertime
+                                  ? AppColors.overtime
+                                  : (state.isLife
+                                      ? AppColors.lifeGreen
+                                      : (isGolden
+                                          ? AppColors.golden
+                                          : Colors.white))),
                           fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
@@ -346,21 +392,40 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
           onMouseExit: _onMouseExit,
         );
 
+        final buttonPlayStop = _HaloButton(
+          tooltip: state.status == TimerStatus.idle
+              ? 'شروع مجدد تایمر'
+              : 'توقف کامل تایمر (نه کار و نه زندگی)',
+          icon: state.status == TimerStatus.idle
+              ? Icons.play_arrow_rounded
+              : Icons.stop_rounded,
+          iconColor: Colors.white,
+          backgroundColor: state.status == TimerStatus.idle
+              ? realmAccent
+              : Colors.redAccent,
+          onPressed: provider.togglePlayStop,
+          onMouseEnter: _onMouseEnter,
+          onMouseExit: _onMouseExit,
+        );
+
         final List<({Widget widget, double angleDeg})> haloButtons = [
-          (widget: buttonWorkNote, angleDeg: -102.0),
-          (widget: buttonTune, angleDeg: -68.0),
-          (widget: buttonFullscreen, angleDeg: -34.0),
-          (widget: buttonGoldenStar, angleDeg: 0.0),
-          (widget: buttonStopwatch, angleDeg: 34.0),
-          (widget: buttonPin, angleDeg: 68.0),
-          (widget: buttonRealmAction, angleDeg: 102.0),
+          (widget: buttonWorkNote, angleDeg: -105.0),
+          (widget: buttonTune, angleDeg: -75.0),
+          (widget: buttonFullscreen, angleDeg: -45.0),
+          (widget: buttonPlayStop, angleDeg: -15.0),
+          (widget: buttonGoldenStar, angleDeg: 15.0),
+          (widget: buttonStopwatch, angleDeg: 45.0),
+          (widget: buttonPin, angleDeg: 75.0),
+          (widget: buttonRealmAction, angleDeg: 105.0),
         ];
 
         const double haloOrbitRadius = 55.0;
 
-        final String capsuleText = activeOutcome?.title ??
-            active?.titleSnapshot ??
-            (state.isLife ? 'زندگی / استراحت' : 'تسک جدید...');
+        final String capsuleText = state.status == TimerStatus.idle
+            ? 'تایمر متوقف است'
+            : (activeOutcome?.title ??
+                active?.titleSnapshot ??
+                (state.isLife ? 'زندگی / استراحت' : 'تسک جدید...'));
 
         final taskCapsule = MouseRegion(
           onEnter: (_) => _onMouseEnter(),
@@ -515,7 +580,7 @@ class _FloatingWidgetViewState extends State<FloatingWidgetView>
 
                 if (provider.isQuickMenuExpanded)
                   const Positioned(
-                    top: 86,
+                    top: 122,
                     left: 14,
                     right: 14,
                     bottom: 8,

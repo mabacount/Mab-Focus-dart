@@ -13,6 +13,7 @@ import '../models/project_node.dart';
 import '../models/scheduled_block.dart';
 import '../models/session_note.dart';
 import '../models/time_record.dart';
+import 'ecosystem_core_service.dart';
 
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._init();
@@ -28,10 +29,13 @@ class DatabaseService {
     _isTestDb = true;
   }
 
+  bool _unifiedColumnsVerified = false;
+
   @visibleForTesting
   void resetForTest() {
     _database = null;
     _isTestDb = false;
+    _unifiedColumnsVerified = false;
   }
 
   Future<Database> get database async {
@@ -63,14 +67,43 @@ class DatabaseService {
       dbPath,
       version: 5,
       onConfigure: (db) async {
-        await db.rawQuery('PRAGMA busy_timeout = 5000');
+        await db.execute('PRAGMA busy_timeout = 5000;');
         try {
-          await db.rawQuery('PRAGMA journal_mode = WAL');
+          await db.execute('PRAGMA journal_mode = WAL;');
+          await db.execute('PRAGMA synchronous = NORMAL;');
         } catch (_) {}
+      },
+      onOpen: (db) async {
+        await db.execute('PRAGMA busy_timeout = 5000;');
+        try {
+          await db.execute('PRAGMA journal_mode = WAL;');
+          await db.execute('PRAGMA synchronous = NORMAL;');
+        } catch (_) {}
+        await _ensureUnifiedProjectColumns(db);
       },
       onCreate: createSchemaV5,
       onUpgrade: _upgradeDB,
     );
+  }
+
+  /// مسیر دایرکتوری محل قرارگیری فایل دیتابیس
+  Future<String> getDatabaseDirectoryPath() async {
+    if (Platform.isWindows || Platform.isLinux) {
+      final appSupportDir = await getApplicationSupportDirectory();
+      final appDir = Directory(p.join(appSupportDir.path, 'MabFocus'));
+      if (!await appDir.exists()) {
+        await appDir.create(recursive: true);
+      }
+      return appDir.path;
+    } else {
+      return await getDatabasesPath();
+    }
+  }
+
+  /// مسیر کامل فایل mab_focus_v3.db
+  Future<String> getDatabaseFilePath() async {
+    final dir = await getDatabaseDirectoryPath();
+    return p.join(dir, 'mab_focus_v3.db');
   }
 
   @visibleForTesting
@@ -88,7 +121,15 @@ class DatabaseService {
         monthly_quota_minutes INTEGER NOT NULL DEFAULT 0,
         hourly_rate REAL NOT NULL DEFAULT 0.0,
         google_calendar_id TEXT NULL,
-        created_at TEXT NOT NULL DEFAULT ''
+        created_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS applied_core_merges (
+        merge_id TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL
       )
     ''');
 
@@ -189,6 +230,7 @@ class DatabaseService {
 
     await _createV5Indexes(db);
     await _seedDefaultPhaseTags(db);
+    _unifiedColumnsVerified = true;
   }
 
   Future<void> _createV5Indexes(Database db) async {
@@ -276,6 +318,13 @@ class DatabaseService {
             "ALTER TABLE projects ADD COLUMN created_at TEXT NOT NULL DEFAULT ''");
         await db.execute(
             "UPDATE projects SET created_at = ? WHERE created_at = ''",
+            [nowIso]);
+      }
+      if (!cols.contains('updated_at')) {
+        await db.execute(
+            "ALTER TABLE projects ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+        await db.execute(
+            "UPDATE projects SET updated_at = COALESCE(NULLIF(created_at, ''), ?)",
             [nowIso]);
       }
     }
@@ -610,22 +659,66 @@ class DatabaseService {
     return chain;
   }
 
+  bool get _shouldSyncCore =>
+      !_isTestDb || EcosystemCoreService.instance.hasTestCoreOverride;
+
+  Future<void> _ensureUnifiedProjectColumns(Database db) async {
+    if (_unifiedColumnsVerified) return;
+    if (await _tableExists(db, 'projects')) {
+      final cols = await _getTableColumns(db, 'projects');
+      if (!cols.contains('updated_at')) {
+        await db.execute(
+            "ALTER TABLE projects ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+        await db.execute(
+            "UPDATE projects SET updated_at = COALESCE(NULLIF(created_at, ''), ?)",
+            [DateTime.now().toUtc().toIso8601String()]);
+      }
+    }
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS applied_core_merges (
+        merge_id TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      )
+    ''');
+    _unifiedColumnsVerified = true;
+  }
+
+  Future<bool> reconcileWithEcosystemCore() async {
+    if (!_shouldSyncCore) return false;
+    final db = await database;
+    await _ensureUnifiedProjectColumns(db);
+    final localPath = _isTestDb ? '' : await getDatabaseFilePath();
+    return EcosystemCoreService.instance
+        .reconcileWithCore(db, localDbPath: localPath);
+  }
+
   // ==================== مدیریت پروژه‌ها (Projects) ====================
 
   Future<void> insertProject(ProjectNode project) async {
     final db = await database;
-    await db.insert('projects', project.toMap(),
+    await _ensureUnifiedProjectColumns(db);
+    final stamped = project.copyWith(updatedAt: DateTime.now().toUtc());
+    await db.insert('projects', stamped.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushProjectUpsert(stamped);
+    }
   }
 
   Future<void> updateProject(ProjectNode project) async {
     final db = await database;
-    await db.update('projects', project.toMap(),
-        where: 'id = ?', whereArgs: [project.id]);
+    await _ensureUnifiedProjectColumns(db);
+    final stamped = project.copyWith(updatedAt: DateTime.now().toUtc());
+    await db.update('projects', stamped.toMap(),
+        where: 'id = ?', whereArgs: [stamped.id]);
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushProjectUpsert(stamped);
+    }
   }
 
   Future<void> deleteProject(String id) async {
     final db = await database;
+    await _ensureUnifiedProjectColumns(db);
     final allProjects = await getProjects(includeArchived: true);
     final toDelete = getProjectAndDescendantIds(id, allProjects);
 
@@ -658,6 +751,61 @@ class DatabaseService {
         await txn.delete('projects', where: 'id = ?', whereArgs: [pid]);
       }
     });
+
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushProjectDelete(toDelete.toList());
+    }
+  }
+
+  /// ادغام اتمی پروژه‌ی مبدا (sourceId) به مقصد (targetId):
+  /// - تمام outcomes، time_records، session_notes و scheduled_blocks
+  ///   مبدا (و زیرپروژه‌های مستقیم) به مقصد منتقل می‌شوند.
+  /// - زیرپروژه‌های مستقیم مبدا به فرزند مقصد تبدیل می‌شوند.
+  /// - در آخر پروژه‌ی مبدا (تنها خودش) حذف می‌شود.
+  Future<void> mergeProject(String sourceId, String targetId) async {
+    final db = await database;
+    await _ensureUnifiedProjectColumns(db);
+    final allProjects = await getProjects(includeArchived: true);
+    final sourceNode =
+        allProjects.where((p) => p.id == sourceId).firstOrNull;
+    final directChildren = allProjects
+        .where((p) => p.parentId == sourceId)
+        .map((p) => p.id)
+        .toList();
+
+    await db.transaction((txn) async {
+      // ۱. انتقال کلیه داده‌های مستقیم مبدا به مقصد
+      for (final table in ['outcomes', 'time_records', 'session_notes', 'scheduled_blocks']) {
+        await txn.update(
+          table,
+          {'project_id': targetId},
+          where: 'project_id = ?',
+          whereArgs: [sourceId],
+        );
+      }
+
+      // ۲. زیرپروژه‌های مستقیم مبدا → فرزند مقصد
+      for (final childId in directChildren) {
+        await txn.update(
+          'projects',
+          {'parent_id': targetId, 'updated_at': DateTime.now().toUtc().toIso8601String()},
+          where: 'id = ?',
+          whereArgs: [childId],
+        );
+      }
+
+      // ۳. حذف خود پروژه‌ی مبدا (نه فرزندان)
+      await txn.delete('projects', where: 'id = ?', whereArgs: [sourceId]);
+    });
+
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushProjectMerge(
+        sourceId,
+        targetId,
+        sourceName: sourceNode?.name ?? '',
+        localDbToRecordApplied: db,
+      );
+    }
   }
 
   Future<List<ProjectNode>> getProjects({
@@ -700,6 +848,9 @@ class DatabaseService {
     final db = await database;
     await db.insert('outcomes', outcome.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushOutcome(outcome);
+    }
   }
 
   Future<void> updateOutcome(OutcomeItem outcome) async {
@@ -724,6 +875,9 @@ class DatabaseService {
         whereArgs: [outcome.id],
       );
     });
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushOutcome(outcome);
+    }
   }
 
   Future<void> markOutcomeCompleted(String id) async {
@@ -813,6 +967,9 @@ class DatabaseService {
     final db = await database;
     await db.insert('time_records', record.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushTimeRecord(record);
+    }
   }
 
   Future<void> updateTimeRecord(TimeRecord record,
@@ -834,6 +991,9 @@ class DatabaseService {
         );
       }
     });
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushTimeRecord(record);
+    }
   }
 
   Future<void> deleteTimeRecord(String id) async {
@@ -1023,6 +1183,10 @@ class DatabaseService {
       );
     });
 
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushTimeRecord(updated);
+    }
+
     return updated;
   }
 
@@ -1032,12 +1196,18 @@ class DatabaseService {
     final db = await database;
     await db.insert('session_notes', note.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushSessionNote(note);
+    }
   }
 
   Future<void> updateSessionNote(SessionNote note) async {
     final db = await database;
     await db.update('session_notes', note.toMap(),
         where: 'id = ?', whereArgs: [note.id]);
+    if (_shouldSyncCore) {
+      await EcosystemCoreService.instance.pushSessionNote(note);
+    }
   }
 
   Future<void> deleteSessionNote(String id) async {
@@ -1165,6 +1335,19 @@ class DatabaseService {
   Future<void> deleteMusicPlaylist(String id) async {
     final db = await database;
     await db.delete('music_playlists', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> setDefaultMusicPlaylist(String id) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.update('music_playlists', {'is_default': 0});
+      await txn.update(
+        'music_playlists',
+        {'is_default': 1},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
   }
 
   // ==================== تنظیمات برنامه و وضعیت موتور ====================

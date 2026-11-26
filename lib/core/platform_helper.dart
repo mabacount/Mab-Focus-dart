@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 import '../models/pomodoro_state.dart';
 import 'constants.dart';
+import 'window_bounds_helper.dart';
 
 class PlatformHelper {
   static bool get isDesktop =>
@@ -20,6 +22,12 @@ class PlatformHelper {
   static const double expandedSheetWidth = 360.0;
   static const double expandedSheetHeight = 560.0;
 
+  static const Size dashboardMinSize = Size(420, 480);
+  static const Size dashboardDefaultSize = Size(1180, 780);
+  static const Size startupDefaultSize = Size(1220, 800);
+  static const Size floatingMinSize = Size(200, 140);
+  static const Size edgeDockSize = Size(18, 140);
+
   static Future<void> pinToAllVirtualDesktops() async {
     if (!Platform.isWindows) return;
     try {
@@ -27,13 +35,93 @@ class PlatformHelper {
     } catch (_) {}
   }
 
+  static Future<
+      ({
+        Rect primaryVisible,
+        List<Rect> allVisible,
+        List<Display> displays,
+        Display? primaryDisplay,
+      })> _getDisplaySnapshot() async {
+    Display? primary;
+    List<Display> displays = [];
+    try {
+      primary = await screenRetriever.getPrimaryDisplay();
+    } catch (_) {}
+    try {
+      displays = await screenRetriever.getAllDisplays();
+    } catch (_) {}
+
+    final Rect primaryVisible = primary != null
+        ? WindowBoundsHelper.displayVisibleRect(primary)
+        : (displays.isNotEmpty
+            ? WindowBoundsHelper.displayVisibleRect(displays.first)
+            : WindowBoundsHelper.fallbackDisplayBounds);
+
+    final List<Rect> allVisible = [primaryVisible];
+    for (final d in displays) {
+      final rect = WindowBoundsHelper.displayVisibleRect(d);
+      if (rect != primaryVisible) {
+        allVisible.add(rect);
+      }
+    }
+
+    return (
+      primaryVisible: primaryVisible,
+      allVisible: allVisible,
+      displays: displays,
+      primaryDisplay: primary ?? (displays.isNotEmpty ? displays.first : null),
+    );
+  }
+
+  static Display? _resolveTargetDisplay(
+    List<Display> displays,
+    Display? primary,
+    Rect? windowBounds,
+  ) {
+    if (displays.isEmpty) return primary;
+    final primaryRect = primary != null
+        ? WindowBoundsHelper.displayVisibleRect(primary)
+        : WindowBoundsHelper.displayVisibleRect(displays.first);
+    final rects = displays.map(WindowBoundsHelper.displayVisibleRect).toList();
+    final targetRect = WindowBoundsHelper.selectTargetDisplayBounds(
+      windowBounds: windowBounds,
+      displayVisibleBounds: rects,
+      primaryVisibleBounds: primaryRect,
+    );
+    for (final d in displays) {
+      if (WindowBoundsHelper.displayVisibleRect(d) == targetRect) {
+        return d;
+      }
+    }
+    return primary ?? displays.first;
+  }
+
+  static Future<Rect?> _getCurrentWindowBounds() async {
+    try {
+      return await windowManager.getBounds();
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<void> initWindowManager() async {
     if (!isDesktop) return;
     await windowManager.ensureInitialized();
 
-    const WindowOptions windowOptions = WindowOptions(
-      size: Size(1220, 800),
-      minimumSize: Size(18, 140),
+    final snapshot = await _getDisplaySnapshot();
+    final Rect initialBounds = WindowBoundsHelper.clampAndCenterInBounds(
+      desiredSize: startupDefaultSize,
+      targetBounds: snapshot.primaryVisible,
+      minSize: dashboardMinSize,
+    );
+    final Size minSize = WindowBoundsHelper.effectiveMinSize(
+      dashboardMinSize,
+      snapshot.primaryVisible,
+    );
+
+    final WindowOptions windowOptions = WindowOptions(
+      size: initialBounds.size,
+      minimumSize: minSize,
       center: true,
       backgroundColor: AppColors.background,
       skipTaskbar: false,
@@ -41,37 +129,167 @@ class PlatformHelper {
       title: 'Mab-Focus v4.0 — Work & Life OS',
     );
 
-    await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
-      await pinToAllVirtualDesktops();
-    });
+    try {
+      await windowManager.waitUntilReadyToShow(windowOptions, () async {
+        try {
+          if (await windowManager.isFullScreen()) {
+            await windowManager.setFullScreen(false);
+          }
+        } catch (_) {}
+        try {
+          await windowManager.setAlwaysOnTop(false);
+        } catch (_) {}
+        try {
+          await windowManager.setResizable(true);
+        } catch (_) {}
+        try {
+          await windowManager.setBounds(initialBounds);
+        } catch (_) {}
+        try {
+          await windowManager.show();
+        } catch (_) {}
+        try {
+          await windowManager.focus();
+        } catch (_) {}
+        await pinToAllVirtualDesktops();
+      });
+    } catch (_) {
+      try {
+        await windowManager.show();
+      } catch (_) {}
+    }
   }
 
   static Future<void> switchToDashboardMode() async {
     if (!isDesktop) return;
-    await windowManager.setAlwaysOnTop(false);
-    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-    await windowManager.setBackgroundColor(AppColors.background);
-    await windowManager.setResizable(true);
-    await windowManager.setHasShadow(true);
-    await windowManager.setSize(const Size(1180, 780));
-    await windowManager.center();
+    try {
+      try {
+        if (await windowManager.isFullScreen()) {
+          await windowManager.setFullScreen(false);
+        }
+      } catch (_) {}
+      try {
+        if (await windowManager.isMaximized()) {
+          await windowManager.unmaximize();
+        }
+      } catch (_) {}
+
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.setBackgroundColor(AppColors.background);
+      await windowManager.setResizable(true);
+      await windowManager.setHasShadow(true);
+
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      final targetVisible = WindowBoundsHelper.selectTargetDisplayBounds(
+        windowBounds: currentBounds,
+        displayVisibleBounds: snapshot.allVisible,
+        primaryVisibleBounds: snapshot.primaryVisible,
+      );
+      final targetRect = WindowBoundsHelper.clampAndCenterInBounds(
+        desiredSize: dashboardDefaultSize,
+        targetBounds: targetVisible,
+        minSize: dashboardMinSize,
+      );
+      final minSize = WindowBoundsHelper.effectiveMinSize(
+        dashboardMinSize,
+        targetVisible,
+      );
+
+      await windowManager.setMinimumSize(minSize);
+      await windowManager.setBounds(targetRect);
+    } catch (_) {}
+  }
+
+  static Future<void> enterLifeSlideshowMode() async {
+    if (!isDesktop) return;
+    try {
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      final targetDisplay = _resolveTargetDisplay(
+        snapshot.displays,
+        snapshot.primaryDisplay,
+        currentBounds,
+      );
+
+      final double screenLeft = targetDisplay?.visiblePosition?.dx ?? 0.0;
+      final double screenTop = targetDisplay?.visiblePosition?.dy ?? 0.0;
+      final double screenWidth = targetDisplay?.size.width ??
+          WindowBoundsHelper.fallbackDisplayBounds.width;
+      final double screenHeight = targetDisplay?.size.height ??
+          WindowBoundsHelper.fallbackDisplayBounds.height;
+
+      // ۱. اجازه تغییر ابعاد به سیستم عامل ویندوز داده شود
+      await windowManager.setResizable(true);
+
+      // ۲. ریست وضعیت frameless در پلاگین window_manager تا متد setFullScreen عمل کند
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+
+      // ۳. تغییر صریح ابعاد و مختصات پنجره دقیقا به ابعاد مانیتور فعال
+      await windowManager.setBounds(
+        Rect.fromLTWH(screenLeft, screenTop, screenWidth, screenHeight),
+      );
+
+      // ۴. فعال‌سازی حالت فول‌اسکرین، قرارگیری در بالاترین لایه و سنجاق به همه دسکتاپ‌ها
+      try {
+        await windowManager.setFullScreen(true);
+      } catch (_) {}
+      await windowManager.setAlwaysOnTop(true);
+      await windowManager.focus();
+      await pinToAllVirtualDesktops();
+    } catch (_) {}
+  }
+
+  static Future<void> exitLifeSlideshowMode(
+      WindowPosture previousPosture) async {
+    if (!isDesktop) return;
+    try {
+      try {
+        if (await windowManager.isFullScreen()) {
+          await windowManager.setFullScreen(false);
+        }
+      } catch (_) {}
+      try {
+        await windowManager.setAlwaysOnTop(false);
+      } catch (_) {}
+
+      if (previousPosture == WindowPosture.dashboard) {
+        await switchToDashboardMode();
+      } else if (previousPosture == WindowPosture.edgeDockedLeft) {
+        await switchToEdgeDockedMode(true);
+      } else if (previousPosture == WindowPosture.edgeDockedRight) {
+        await switchToEdgeDockedMode(false);
+      } else {
+        await switchToFloatingWidgetMode();
+      }
+    } catch (_) {
+      await switchToDashboardMode();
+    }
   }
 
   static Future<void> setPinned(bool isPinned) async {
     if (!isDesktop) return;
-    await windowManager.setAlwaysOnTop(isPinned);
+    try {
+      await windowManager.setAlwaysOnTop(isPinned);
+    } catch (_) {}
   }
 
   static Future<bool> isNearLeftEdge() async {
     if (!isDesktop) return false;
     try {
-      final display = await screenRetriever.getPrimaryDisplay();
-      final currentPos = await windowManager.getPosition();
-      final screenLeft = display.visiblePosition?.dx ?? 0.0;
-      // اگر پنجره نزدیک لبه چپ باشد
-      if ((currentPos.dx - screenLeft) < 140.0) {
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      if (currentBounds == null) return false;
+      final targetDisplay = _resolveTargetDisplay(
+        snapshot.displays,
+        snapshot.primaryDisplay,
+        currentBounds,
+      );
+      final targetVisible = targetDisplay != null
+          ? WindowBoundsHelper.displayVisibleRect(targetDisplay)
+          : snapshot.primaryVisible;
+      if ((currentBounds.left - targetVisible.left) < 140.0) {
         return true;
       }
     } catch (_) {}
@@ -82,34 +300,41 @@ class PlatformHelper {
   static Future<void> updateFloatingSheetExpansion(bool isSheetExpanded) async {
     if (!isDesktop) return;
     try {
-      final display = await screenRetriever.getPrimaryDisplay();
-      final currentPos = await windowManager.getPosition();
-      final currentSize = await windowManager.getSize();
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      final double cx = currentBounds != null
+          ? currentBounds.left + (currentBounds.width / 2.0)
+          : snapshot.primaryVisible.center.dx;
+      final double top = currentBounds?.top ?? snapshot.primaryVisible.top + 80.0;
 
-      final double screenLeft = display.visiblePosition?.dx ?? 0.0;
-      final double screenTop = display.visiblePosition?.dy ?? 0.0;
-      final double screenWidth = display.size.width;
-      final double screenHeight = display.size.height;
-
-      final double cx = currentPos.dx + (currentSize.width / 2.0);
-      final double cy = currentPos.dy + 80.0;
+      final targetVisible = WindowBoundsHelper.selectTargetDisplayBounds(
+        windowBounds: currentBounds,
+        displayVisibleBounds: snapshot.allVisible,
+        primaryVisibleBounds: snapshot.primaryVisible,
+      );
 
       final double targetWidth =
           isSheetExpanded ? expandedSheetWidth : hoveredWidth;
+      final double maxSheetH = math.max(300.0, targetVisible.height - 40.0);
       final double targetHeight = isSheetExpanded
-          ? expandedSheetHeight.clamp(300.0, screenHeight - 40.0)
+          ? expandedSheetHeight.clamp(300.0, maxSheetH)
           : hoveredHeight;
 
-      final double maxX = screenLeft + screenWidth - targetWidth;
-      final double maxY = screenTop + screenHeight - targetHeight;
+      final clamped = WindowBoundsHelper.clampWindowBounds(
+        desired: Rect.fromLTWH(
+          cx - (targetWidth / 2.0),
+          top,
+          targetWidth,
+          targetHeight,
+        ),
+        displayVisibleBounds: snapshot.allVisible,
+        minSize: floatingMinSize,
+      );
 
-      final double targetX = (cx - (targetWidth / 2.0))
-          .clamp(screenLeft, maxX > screenLeft ? maxX : screenLeft);
-      final double targetY = (cy - 80.0)
-          .clamp(screenTop, maxY > screenTop ? maxY : screenTop);
-
-      await windowManager.setSize(Size(targetWidth, targetHeight));
-      await windowManager.setPosition(Offset(targetX, targetY));
+      await windowManager.setMinimumSize(
+        WindowBoundsHelper.effectiveMinSize(floatingMinSize, targetVisible),
+      );
+      await windowManager.setBounds(clamped);
     } catch (_) {}
   }
 
@@ -130,71 +355,116 @@ class PlatformHelper {
     bool isPinned = true,
   }) async {
     if (!isDesktop) return;
+    try {
+      try {
+        if (await windowManager.isFullScreen()) {
+          await windowManager.setFullScreen(false);
+        }
+      } catch (_) {}
 
-    await windowManager.setAsFrameless();
-    await windowManager.setBackgroundColor(Colors.transparent);
-    await windowManager.setHasShadow(false);
-    await windowManager.setAlwaysOnTop(isPinned);
-    await windowManager.setResizable(false);
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      final targetVisible = WindowBoundsHelper.selectTargetDisplayBounds(
+        windowBounds: currentBounds,
+        displayVisibleBounds: snapshot.allVisible,
+        primaryVisibleBounds: snapshot.primaryVisible,
+      );
 
-    final display = await screenRetriever.getPrimaryDisplay();
-    final Offset currentPos = await windowManager.getPosition();
+      await windowManager.setMinimumSize(
+        WindowBoundsHelper.effectiveMinSize(floatingMinSize, targetVisible),
+      );
+      await windowManager.setAsFrameless();
+      await windowManager.setBackgroundColor(Colors.transparent);
+      await windowManager.setHasShadow(false);
+      await windowManager.setAlwaysOnTop(isPinned);
+      await windowManager.setResizable(false);
 
-    final double screenLeft = display.visiblePosition?.dx ?? 0.0;
-    final double screenTop = display.visiblePosition?.dy ?? 0.0;
-    final double screenWidth = display.size.width;
-    final double screenHeight = display.size.height;
+      final double targetWidth =
+          isSheetExpanded ? expandedSheetWidth : hoveredWidth;
+      final double targetHeight =
+          isSheetExpanded ? expandedSheetHeight : hoveredHeight;
 
-    final double targetWidth =
-        isSheetExpanded ? expandedSheetWidth : hoveredWidth;
-    final double targetHeight =
-        isSheetExpanded ? expandedSheetHeight : hoveredHeight;
+      final desired = Rect.fromLTWH(
+        currentBounds?.left ?? targetVisible.left + 40.0,
+        currentBounds?.top ?? targetVisible.top + 40.0,
+        targetWidth,
+        targetHeight,
+      );
+      final clamped = WindowBoundsHelper.clampWindowBounds(
+        desired: desired,
+        displayVisibleBounds: snapshot.allVisible,
+        minSize: floatingMinSize,
+      );
 
-    final double maxX = screenLeft + screenWidth - targetWidth;
-    final double maxY = screenTop + screenHeight - targetHeight;
-
-    final double newX =
-        currentPos.dx.clamp(screenLeft, maxX > screenLeft ? maxX : screenLeft);
-    final double newY =
-        currentPos.dy.clamp(screenTop, maxY > screenTop ? maxY : screenTop);
-
-    await windowManager.setSize(Size(targetWidth, targetHeight));
-    await windowManager.setPosition(Offset(newX, newY));
-    await pinToAllVirtualDesktops();
+      await windowManager.setBounds(clamped);
+      await pinToAllVirtualDesktops();
+    } catch (_) {}
   }
 
   static Future<void> switchToEdgeDockedMode(bool isLeft) async {
     if (!isDesktop) return;
-    final display = await screenRetriever.getPrimaryDisplay();
-    final Offset currentPos = await windowManager.getPosition();
+    try {
+      try {
+        if (await windowManager.isFullScreen()) {
+          await windowManager.setFullScreen(false);
+        }
+      } catch (_) {}
 
-    await windowManager.setAsFrameless();
-    await windowManager.setBackgroundColor(Colors.transparent);
-    await windowManager.setHasShadow(false);
-    await windowManager.setAlwaysOnTop(true);
-    await windowManager.setResizable(false);
-    await windowManager.setSize(const Size(18, 140));
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      final targetVisible = WindowBoundsHelper.selectTargetDisplayBounds(
+        windowBounds: currentBounds,
+        displayVisibleBounds: snapshot.allVisible,
+        primaryVisibleBounds: snapshot.primaryVisible,
+      );
 
-    final double targetX = isLeft ? 0.0 : (display.size.width - 18.0);
-    final double targetY =
-        currentPos.dy.clamp(40.0, display.size.height - 180.0);
-    await windowManager.setPosition(Offset(targetX, targetY));
-    await pinToAllVirtualDesktops();
+      await windowManager.setMinimumSize(
+        WindowBoundsHelper.effectiveMinSize(edgeDockSize, targetVisible),
+      );
+      await windowManager.setAsFrameless();
+      await windowManager.setBackgroundColor(Colors.transparent);
+      await windowManager.setHasShadow(false);
+      await windowManager.setAlwaysOnTop(true);
+      await windowManager.setResizable(false);
+
+      final double targetX = isLeft
+          ? targetVisible.left
+          : (targetVisible.right - edgeDockSize.width);
+      final double targetY =
+          currentBounds?.top ?? (targetVisible.top + 40.0);
+
+      final Rect clamped = WindowBoundsHelper.clampWindowBounds(
+        desired: Rect.fromLTWH(
+          targetX,
+          targetY,
+          edgeDockSize.width,
+          edgeDockSize.height,
+        ),
+        displayVisibleBounds: [targetVisible],
+        minSize: edgeDockSize,
+      );
+
+      await windowManager.setBounds(clamped);
+      await pinToAllVirtualDesktops();
+    } catch (_) {}
   }
 
   static Future<WindowPosture?> checkEdgeSnapCondition() async {
     if (!isDesktop) return null;
     try {
-      final display = await screenRetriever.getPrimaryDisplay();
-      final Offset pos = await windowManager.getPosition();
-      final Size winSize = await windowManager.getSize();
+      final snapshot = await _getDisplaySnapshot();
+      final currentBounds = await _getCurrentWindowBounds();
+      if (currentBounds == null) return null;
 
-      final double screenLeft = display.visiblePosition?.dx ?? 0.0;
-      final double screenRight = screenLeft + display.size.width;
+      final targetVisible = WindowBoundsHelper.selectTargetDisplayBounds(
+        windowBounds: currentBounds,
+        displayVisibleBounds: snapshot.allVisible,
+        primaryVisibleBounds: snapshot.primaryVisible,
+      );
 
-      if (pos.dx <= screenLeft + 15.0) {
+      if (currentBounds.left <= targetVisible.left + 15.0) {
         return WindowPosture.edgeDockedLeft;
-      } else if (pos.dx + winSize.width >= screenRight - 15.0) {
+      } else if (currentBounds.right >= targetVisible.right - 15.0) {
         return WindowPosture.edgeDockedRight;
       }
     } catch (_) {}

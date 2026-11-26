@@ -33,9 +33,6 @@ class FlutterWindow : public Win32Window {
 
   // Virtual Desktop method channel to pin window across all desktops.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> vdesktop_channel_;
-
-  // Retry counter for delayed virtual-desktop pinning after window creation.
-  int pin_retry_count_ = 0;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

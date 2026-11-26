@@ -79,7 +79,10 @@ class _MabFocusAppState extends State<MabFocusApp> with WindowListener {
       windowManager.addListener(this);
       unawaited(windowManager.setPreventClose(true).catchError((_) {}));
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        WorkNoteWindowCoordinator.instance.prewarm();
+        Future<void>.delayed(const Duration(milliseconds: 650), () {
+          if (!mounted || _isShuttingDown) return;
+          WorkNoteWindowCoordinator.instance.prewarm();
+        });
       });
     }
   }
@@ -90,12 +93,19 @@ class _MabFocusAppState extends State<MabFocusApp> with WindowListener {
     _isShuttingDown = true;
     try {
       await WorkNoteWindowCoordinator.instance.disposeHostWindow();
-    } finally {
-      try {
-        await windowManager.setPreventClose(false);
-        await windowManager.close();
-      } catch (_) {}
-    }
+    } catch (_) {}
+    try {
+      if (mounted) {
+        await context
+            .read<AppStateProvider>()
+            .flushPendingMutations()
+            .timeout(const Duration(seconds: 3), onTimeout: () {});
+      }
+    } catch (_) {}
+    try {
+      await windowManager.setPreventClose(false);
+      await windowManager.close();
+    } catch (_) {}
   }
 
   @override

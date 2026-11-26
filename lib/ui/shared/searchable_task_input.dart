@@ -2,13 +2,17 @@ import 'package:flutter/material.dart';
 import '../../core/constants.dart';
 import '../../models/outcome_item.dart';
 import '../../models/project_node.dart';
+import '../../models/time_record.dart';
 
-/// فیلد جستجو و ایجاد زنده برای کارها/اهداف باز (OutcomeItem) در قلمرو فعال
+/// فیلد جستجو و ایجاد زنده برای کارها/اهداف (باز، تکمیل‌شده قبلی و سوابق تاریخی)
 class SearchableTaskInput extends StatefulWidget {
   final TextEditingController controller;
   final List<OutcomeItem> openOutcomes;
+  final List<OutcomeItem> completedOutcomes;
+  final List<TimeRecord> historicalRecords;
   final List<ProjectNode> projects;
   final void Function(OutcomeItem outcome)? onSelectOutcome;
+  final void Function(TimeRecord record)? onSelectHistoricalRecord;
   final void Function(String title)? onCreateNew;
   final VoidCallback? onSubmitted;
   final ValueChanged<String>? onChanged;
@@ -20,8 +24,11 @@ class SearchableTaskInput extends StatefulWidget {
     super.key,
     required this.controller,
     required this.openOutcomes,
+    this.completedOutcomes = const [],
+    this.historicalRecords = const [],
     this.projects = const [],
     this.onSelectOutcome,
+    this.onSelectHistoricalRecord,
     this.onCreateNew,
     this.onSubmitted,
     this.onChanged,
@@ -72,12 +79,39 @@ class _SearchableTaskInputState extends State<SearchableTaskInput> {
 
   @override
   Widget build(BuildContext context) {
-    // تضمین نمایش صرفاً کارهای باز (isCompleted == false)
+    // کارهای باز (isCompleted == false)
     final openList = widget.openOutcomes.where((o) {
       if (o.isCompleted) return false;
       if (_query.isEmpty) return true;
       return o.title.toLowerCase().contains(_query);
     }).toList();
+
+    // کارهای تکمیل‌شده قبلی (برای انتخاب مجدد و بازگشایی)
+    final completedList = widget.completedOutcomes.where((o) {
+      if (!o.isCompleted) return false;
+      if (_query.isEmpty) return true;
+      return o.title.toLowerCase().contains(_query);
+    }).toList();
+
+    // سوابق تاریخی بدون Outcome (فقط رکوردهای دارای عنوان واقعی و بدون تکرار)
+    final Set<String> knownTitles = {
+      for (final o in widget.openOutcomes) o.title.trim().toLowerCase(),
+      for (final o in widget.completedOutcomes) o.title.trim().toLowerCase(),
+    };
+    final List<TimeRecord> historicalList = [];
+    final Set<String> seenHistorical = {};
+    for (final r in widget.historicalRecords) {
+      if (r.isUntitledDraft) continue;
+      final t = r.titleSnapshot.trim();
+      final lower = t.toLowerCase();
+      if (t.isEmpty || t == AppDefaults.untitledTaskTitle) continue;
+      if (knownTitles.contains(lower) || seenHistorical.contains(lower)) {
+        continue;
+      }
+      if (_query.isNotEmpty && !lower.contains(_query)) continue;
+      seenHistorical.add(lower);
+      historicalList.add(r);
+    }
 
     final rawText = widget.controller.text.trim();
     final bool hasExactMatch = widget.openOutcomes
@@ -91,8 +125,11 @@ class _SearchableTaskInputState extends State<SearchableTaskInput> {
       for (final p in widget.projects) p.id: p
     };
 
-    final bool showDropdown =
-        _isFocused && (openList.isNotEmpty || showCreateRow);
+    final bool showDropdown = _isFocused &&
+        (openList.isNotEmpty ||
+            completedList.isNotEmpty ||
+            historicalList.isNotEmpty ||
+            showCreateRow);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -218,6 +255,119 @@ class _SearchableTaskInputState extends State<SearchableTaskInput> {
                           Expanded(
                             child: Text(
                               outcome.title,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                          ),
+                          if (proj != null) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: projColor.withAlpha(32),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                proj.name,
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  color: projColor,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(width: 4),
+                          Icon(Icons.play_arrow_rounded,
+                              size: 16, color: widget.accentColor),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+                ...completedList.map((outcome) {
+                  final proj = outcome.projectId != null
+                      ? projMap[outcome.projectId]
+                      : null;
+                  final projColor = _parseHex(proj?.colorHex);
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () {
+                      widget.controller.text = outcome.title;
+                      _focusNode.unfocus();
+                      widget.onSelectOutcome?.call(outcome);
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 5),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.replay_rounded,
+                              size: 14, color: AppColors.lifeGreen),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              outcome.title,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                          ),
+                          if (proj != null) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: projColor.withAlpha(32),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                proj.name,
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  color: projColor,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(width: 4),
+                          Icon(Icons.play_arrow_rounded,
+                              size: 16, color: widget.accentColor),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+                ...historicalList.map((rec) {
+                  final proj =
+                      rec.projectId != null ? projMap[rec.projectId] : null;
+                  final projColor = _parseHex(proj?.colorHex);
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () {
+                      widget.controller.text = rec.titleSnapshot;
+                      _focusNode.unfocus();
+                      widget.onSelectHistoricalRecord?.call(rec);
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 5),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.history_rounded,
+                              size: 14, color: AppColors.textSecondary),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              rec.titleSnapshot,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 fontSize: 11.5,

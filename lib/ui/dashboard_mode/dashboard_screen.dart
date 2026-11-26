@@ -146,7 +146,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         provider.getOpenOutcomes(realm: provider.dashboardRealm).length;
 
     Color statusColor = AppColors.workBlue;
-    if (state.isOvertime) {
+    if (state.status == TimerStatus.idle) {
+      statusColor = AppColors.textMuted;
+    } else if (state.isOvertime) {
       statusColor = AppColors.overtime;
     } else if (state.isLife) {
       statusColor = AppColors.lifeGreen;
@@ -168,6 +170,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: palette.background,
       appBar: AppBar(
+        centerTitle: false,
         backgroundColor: palette.surface,
         elevation: 0,
         titleSpacing: isWide ? 16 : (isNarrow ? 6 : 10),
@@ -175,91 +178,122 @@ class _DashboardScreenState extends State<DashboardScreen> {
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: palette.border),
         ),
-        title: Row(
-          children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration:
-                  BoxDecoration(color: statusColor, shape: BoxShape.circle),
-            ),
-            SizedBox(width: isNarrow ? 6 : 8),
-            if (screenWidth >= 540) ...[
-              const Text(
-                'Mab-Focus v4.0',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-              ),
-              const SizedBox(width: 10),
-            ],
-            Container(
-              padding: EdgeInsets.symmetric(
-                  horizontal: isNarrow ? 6 : 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: palette.surfaceElevated,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: palette.border),
-              ),
-              child: Text(
-                state.formattedDisplayTime,
-                style: GoogleFonts.jetBrainsMono(
-                  fontSize: isNarrow ? 12.0 : 13.5,
-                  fontWeight: FontWeight.bold,
-                  color: statusColor,
-                  fontFeatures: const [FontFeature.tabularFigures()],
+        title: Builder(
+          builder: (context) {
+            final titleRow = Row(
+              mainAxisSize:
+                  screenWidth < 680 ? MainAxisSize.min : MainAxisSize.max,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration:
+                      BoxDecoration(color: statusColor, shape: BoxShape.circle),
                 ),
-              ),
-            ),
-            if (activeTitle.isNotEmpty && screenWidth >= 680) ...[
-              const SizedBox(width: 10),
-              Flexible(
-                child: Text(
-                  '${state.realm.labelFa}: $activeTitle',
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 12.5, color: AppColors.textSecondary),
-                ),
-              ),
-            ],
-            if (isWide) ...[
-              const SizedBox(width: 12),
-              Tooltip(
-                message:
-                    'چرخه Flowmodoro: $wMin از $wTargetMin دقیقه کار | ذخیره کوتاه: ${DateTimeUtils.formatDurationHms(state.earnedShortBreakSeconds)} | بدهی: ${DateTimeUtils.formatDurationHms(state.breakDebtSeconds)}\n${provider.breakTargetExplanationFa}',
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                SizedBox(width: isNarrow ? 4 : 8),
+                if (screenWidth >= 540) ...[
+                  const Text(
+                    'Mab-Focus v4.1.0',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                Container(
+                  padding: EdgeInsets.symmetric(
+                      horizontal: isNarrow ? 4 : 8, vertical: 2.5),
                   decoration: BoxDecoration(
                     color: palette.surfaceElevated,
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: palette.border),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.bolt_rounded,
-                          size: 14, color: palette.accent),
-                      const SizedBox(width: 4),
-                      Text(
-                        (state.isLife && state.isInLongBreak)
-                            ? '$wMin/${wTargetMin}m • طولانی: ${DateTimeUtils.formatDurationHms(provider.activeOrPreviewBreakTargetSeconds)}'
-                            : (state.isWork &&
-                                    provider.activeWorkSecondsSinceCycleReset >=
-                                        60)
-                                ? '$wMin/${wTargetMin}m • الان: ${DateTimeUtils.formatDurationHms(provider.projectedBreakTargetSeconds)}${debtMin > 0 ? " (-${debtMin}m)" : ""}'
-                                : '$wMin/${wTargetMin}m • ذخیره: +${bankMin}m${debtMin > 0 ? " (-${debtMin}m)" : ""}',
-                        style: GoogleFonts.jetBrainsMono(
-                          fontSize: 11,
-                          color: AppColors.textPrimary,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    state.status == TimerStatus.idle
+                        ? 'متوقف'
+                        : state.formattedDisplayTime,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: isNarrow ? 11.5 : 13.5,
+                      fontWeight: FontWeight.bold,
+                      color: statusColor,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ],
+                if (state.status == TimerStatus.idle && screenWidth >= 680) ...[
+                  const SizedBox(width: 8),
+                  const Flexible(
+                    child: Text(
+                      'تایمر متوقف است',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: AppColors.textMuted,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ] else if (activeTitle.isNotEmpty && screenWidth >= 680) ...[
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      '${state.realm.labelFa}: $activeTitle',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12.5, color: AppColors.textSecondary),
+                    ),
+                  ),
+                ],
+                if (isWide) ...[
+                  const SizedBox(width: 6),
+                  Tooltip(
+                    message:
+                        'چرخه Flowmodoro: $wMin از $wTargetMin دقیقه کار | ذخیره کوتاه: ${DateTimeUtils.formatDurationHms(state.earnedShortBreakSeconds)} | بدهی: ${DateTimeUtils.formatDurationHms(state.breakDebtSeconds)}\n${provider.breakTargetExplanationFa}',
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: palette.surfaceElevated,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: palette.border),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.bolt_rounded,
+                              size: 14, color: palette.accent),
+                          const SizedBox(width: 4),
+                          Text(
+                            (state.isLife && state.isInLongBreak)
+                                ? '$wMin/${wTargetMin}m • طولانی: ${DateTimeUtils.formatDurationHms(provider.activeOrPreviewBreakTargetSeconds)}'
+                                : (state.isWork &&
+                                        provider.activeWorkSecondsSinceCycleReset >=
+                                            60)
+                                    ? '$wMin/${wTargetMin}m • الان: ${DateTimeUtils.formatDurationHms(provider.projectedBreakTargetSeconds)}${debtMin > 0 ? " (-${debtMin}m)" : ""}'
+                                    : '$wMin/${wTargetMin}m • ذخیره: +${bankMin}m${debtMin > 0 ? " (-${debtMin}m)" : ""}',
+                            style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            );
+            if (screenWidth < 680) {
+              return FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: AlignmentDirectional.centerStart,
+                child: titleRow,
+              );
+            }
+            return titleRow;
+          },
         ),
-        actions: [
+      actions: [
           // سوییچر اصلی داشبورد کار (آبی) / زندگی (سبز)
           _DashboardRealmToggle(
             activeRealm: provider.dashboardRealm,
@@ -328,20 +362,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(width: 6),
           ],
 
+          // دکمه صریح شروع یا توقف کامل ضبط (نه کار و نه زندگی)
+          if (state.status != TimerStatus.idle)
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: isNarrow ? 2 : 4),
+              child: FilledButton.icon(
+                key: const Key('dashboard_stop_recording_button'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  foregroundColor: Colors.white,
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isNarrow ? 7 : 12,
+                    vertical: isNarrow ? 4 : 8,
+                  ),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: () => provider.stopTimer(),
+                icon: Icon(Icons.stop_rounded, size: isNarrow ? 14 : 17),
+                label: Text(
+                  isNarrow ? 'توقف' : 'توقف ضبط',
+                  style: TextStyle(
+                    fontSize: isNarrow ? 10.5 : 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            )
+          else
+            IconButton(
+              key: const Key('dashboard_start_recording_button'),
+              tooltip: 'شروع تایمر (${state.realm.labelFa})',
+              style: isNarrow
+                  ? IconButton.styleFrom(
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      minimumSize: const Size(28, 28),
+                      padding: const EdgeInsets.all(2),
+                    )
+                  : null,
+              icon: Icon(
+                Icons.play_circle_fill_rounded,
+                color: palette.accent,
+                size: isNarrow ? 18 : 24,
+              ),
+              onPressed: () => provider.startTimer(),
+            ),
+
           // سوییچ فوری کار / زندگی تایمر جاری
           IconButton(
             tooltip: state.isWork
                 ? 'ورود به قلمرو زندگی (استراحت)'
                 : 'بازگشت به قلمرو کار',
-            visualDensity: isNarrow ? VisualDensity.compact : null,
-            padding: isNarrow ? const EdgeInsets.all(4) : null,
-            constraints: isNarrow
-                ? const BoxConstraints(minWidth: 32, minHeight: 32)
+            style: isNarrow
+                ? IconButton.styleFrom(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    minimumSize: const Size(28, 28),
+                    padding: const EdgeInsets.all(2),
+                  )
                 : null,
             icon: Icon(
               state.isWork ? Icons.spa_rounded : Icons.work_rounded,
               color: state.isWork ? AppColors.lifeGreen : AppColors.workBlue,
-              size: isNarrow ? 19 : 22,
+              size: isNarrow ? 18 : 22,
             ),
             onPressed: provider.toggleWorkLife,
           ),
@@ -351,10 +433,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             tooltip: state.isStopwatch
                 ? 'تغییر ساعت به پومودورو'
                 : 'تغییر ساعت به کرنومتر آزاد',
-            visualDensity: isNarrow ? VisualDensity.compact : null,
-            padding: isNarrow ? const EdgeInsets.all(4) : null,
-            constraints: isNarrow
-                ? const BoxConstraints(minWidth: 32, minHeight: 32)
+            style: isNarrow
+                ? IconButton.styleFrom(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    minimumSize: const Size(28, 28),
+                    padding: const EdgeInsets.all(2),
+                  )
                 : null,
             icon: Icon(
               state.isStopwatch
@@ -363,7 +447,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: state.isStopwatch
                   ? AppColors.stopwatch
                   : AppColors.textSecondary,
-              size: isNarrow ? 19 : 21,
+              size: isNarrow ? 18 : 21,
             ),
             onPressed: provider.toggleClockType,
           ),
@@ -371,11 +455,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (PlatformHelper.isDesktop && isNarrow)
             IconButton(
               tooltip: 'ویجت شناور',
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              style: IconButton.styleFrom(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                minimumSize: const Size(28, 28),
+                padding: const EdgeInsets.all(2),
+              ),
               icon: Icon(Icons.picture_in_picture_alt_rounded,
-                  size: 19, color: palette.accent),
+                  size: 18, color: palette.accent),
               onPressed: () =>
                   provider.setWindowPosture(WindowPosture.floatingCircle),
             )
@@ -393,10 +479,87 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
         ],
       ),
-      body: Row(
+      body: Column(
         children: [
-          if (isWide)
-            NavigationRail(
+          if (state.status != TimerStatus.idle)
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.symmetric(
+                horizontal: isNarrow ? 10 : 16,
+                vertical: 6,
+              ),
+              decoration: BoxDecoration(
+                color: statusColor.withAlpha(22),
+                border: Border(
+                  bottom: BorderSide(color: statusColor.withAlpha(70)),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: statusColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      activeTitle.isNotEmpty
+                          ? 'در حال ضبط (${state.realm.labelFa}): $activeTitle'
+                          : 'در حال ضبط (${state.realm.labelFa})',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: isNarrow ? 11.5 : 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    state.formattedDisplayTime,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: isNarrow ? 11.5 : 12.5,
+                      fontWeight: FontWeight.bold,
+                      color: statusColor,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    key: const Key('dashboard_banner_stop_button'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                      side: BorderSide(color: Colors.redAccent.withAlpha(140)),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: isNarrow ? 8 : 10,
+                        vertical: 4,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: () => provider.stopTimer(),
+                    icon: const Icon(Icons.stop_rounded, size: 15),
+                    label: Text(
+                      'توقف جلسه',
+                      style: TextStyle(
+                        fontSize: isNarrow ? 11 : 11.5,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: Row(
+              children: [
+                if (isWide)
+                  NavigationRail(
               backgroundColor: palette.surface,
               selectedIndex: _selectedIndex,
               onDestinationSelected: (idx) =>
@@ -480,8 +643,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ],
             ),
-          if (isWide) VerticalDivider(width: 1, color: palette.border),
-          Expanded(child: _tabs[_selectedIndex]),
+                if (isWide) VerticalDivider(width: 1, color: palette.border),
+                Expanded(child: _tabs[_selectedIndex]),
+              ],
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: isWide

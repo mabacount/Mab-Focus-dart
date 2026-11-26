@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:intl/intl.dart' as intl;
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/color_utils.dart';
 import '../../core/constants.dart';
 import '../../core/date_time_utils.dart';
 import '../../core/jalali_date.dart';
@@ -26,6 +28,37 @@ enum CalendarViewSpan { day1, day3, day7 }
 enum CalendarDisplayMode { grid, timesheet }
 
 enum CalendarRealmFilter { allDay, workOnly, lifeOnly }
+
+/// آیتم ذخیره‌شده در پشته بازگردانی (Undo / Redo)
+class _CalendarUndoItem {
+  final String title;
+  final Future<void> Function() undo;
+  final Future<void> Function() redo;
+
+  _CalendarUndoItem({
+    required this.title,
+    required this.undo,
+    required this.redo,
+  });
+}
+
+/// فیزیک اسکرول هوشمند که در زمان فشرده بودن Ctrl (زوم با ماوس یا ترک‌پد) اسکرول را جذب می‌کند تا ویوپورت پرش نکند
+class _CalendarZoomScrollPhysics extends AlwaysScrollableScrollPhysics {
+  const _CalendarZoomScrollPhysics({super.parent});
+
+  @override
+  _CalendarZoomScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return _CalendarZoomScrollPhysics(parent: buildParent(ancestor));
+  }
+
+  @override
+  double applyPhysicsToUserOffset(ScrollMetrics position, double offset) {
+    if (HardwareKeyboard.instance.isControlPressed) {
+      return 0.0;
+    }
+    return super.applyPhysicsToUserOffset(position, offset);
+  }
+}
 
 class CalendarGridTab extends StatefulWidget {
   const CalendarGridTab({super.key});
@@ -54,6 +87,65 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
   bool _isResizingTop = false;
   bool _isResizingBottom = false;
   double _dragAccumulatedDy = 0.0;
+
+  // متغیرهای ایجاد برنامه یا گزارش با درگ روی تقویم (Drag-to-Create)
+  DateTime? _dragCreateDay;
+  bool _dragCreateIsPlanned = true;
+  double? _dragCreateStartDy;
+  double? _dragCreateCurrentDy;
+
+  // سیستم Undo و Redo برای تقویم (Ctrl+Z / Ctrl+Y)
+  final List<_CalendarUndoItem> _undoStack = [];
+  final List<_CalendarUndoItem> _redoStack = [];
+  bool get _canUndo => _undoStack.isNotEmpty;
+  bool get _canRedo => _redoStack.isNotEmpty;
+
+  void _pushUndo({
+    required String title,
+    required Future<void> Function() undo,
+    required Future<void> Function() redo,
+  }) {
+    setState(() {
+      _undoStack.add(_CalendarUndoItem(title: title, undo: undo, redo: redo));
+      _redoStack.clear();
+    });
+  }
+
+  Future<void> _performUndo() async {
+    if (_undoStack.isEmpty) return;
+    final item = _undoStack.removeLast();
+    _redoStack.add(item);
+    await item.undo();
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('تغییر بازگردانده شد: ${item.title}'),
+          duration: const Duration(seconds: 2),
+          action: SnackBarAction(
+            label: 'انجام مجدد (Redo)',
+            onPressed: _performRedo,
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _performRedo() async {
+    if (_redoStack.isEmpty) return;
+    final item = _redoStack.removeLast();
+    _undoStack.add(item);
+    await item.redo();
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('مجدداً اعمال شد: ${item.title}'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -138,16 +230,36 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     }
   }
 
-  void _changeZoom(double delta) {
+  void _changeZoom(double delta, {double? focalPointY}) {
+    final oldHeight = _hourHeight;
+    final newHeight =
+        (_hourHeight + delta).clamp(_minHourHeight, _maxHourHeight);
+    if ((newHeight - oldHeight).abs() < 0.001) return;
+
+    double targetOffset = 0.0;
+    if (_verticalScrollController.hasClients) {
+      final currentScroll = _verticalScrollController.offset;
+      final effectiveFocalY = focalPointY ??
+          (_verticalScrollController.position.viewportDimension / 2.0);
+      final focalHour = (currentScroll + effectiveFocalY) / oldHeight;
+      targetOffset = (focalHour * newHeight) - effectiveFocalY;
+    }
+
     setState(() {
-      _hourHeight = (_hourHeight + delta).clamp(_minHourHeight, _maxHourHeight);
+      _hourHeight = newHeight;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_verticalScrollController.hasClients) {
+        final maxExtent = _verticalScrollController.position.maxScrollExtent;
+        _verticalScrollController.jumpTo(targetOffset.clamp(0.0, maxExtent));
+      }
     });
   }
 
   void _setZoomPreset(double height) {
-    setState(() {
-      _hourHeight = height.clamp(_minHourHeight, _maxHourHeight);
-    });
+    final delta = height - _hourHeight;
+    _changeZoom(delta);
   }
 
   String _formatRangeHeader(List<DateTime> days) {
@@ -171,7 +283,8 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
   }
 
   /// ثبت رکورد زمانی دستی (با تگ «دستی»)
-  void _showAddManualLogModal(BuildContext context, DateTime defaultStart) {
+  void _showAddManualLogModal(BuildContext context, DateTime defaultStart,
+      {DateTime? defaultEnd}) {
     final provider = context.read<AppStateProvider>();
     final titleCtrl = TextEditingController();
     AppRealm selectedRealm = provider.dashboardRealm;
@@ -179,7 +292,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     String? selectedProjectId;
     String? selectedOutcomeId;
     DateTime start = defaultStart;
-    DateTime end = defaultStart.add(const Duration(minutes: 30));
+    DateTime end = defaultEnd ?? defaultStart.add(const Duration(minutes: 30));
 
     showDialog<void>(
       context: context,
@@ -419,7 +532,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                   label: const Text('ثبت گزارش دستی'),
                   onPressed: () async {
                     if (titleCtrl.text.trim().isEmpty) return;
-                    await provider.createManualTimeRecord(
+                    final created = await provider.createManualTimeRecord(
                       realm: selectedRealm,
                       clockMode: selectedClock,
                       title: titleCtrl.text.trim(),
@@ -427,6 +540,11 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                       projectId: selectedProjectId,
                       startTime: start,
                       endTime: end,
+                    );
+                    _pushUndo(
+                      title: 'ثبت گزارش «${created.titleSnapshot}»',
+                      undo: () => provider.deleteTimeRecord(created.id),
+                      redo: () => provider.restoreTimeRecord(created),
                     );
                     if (ctx.mounted) Navigator.of(ctx).pop();
                   },
@@ -440,14 +558,15 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
   }
 
   /// افزودن بلوک برنامه‌ریزی‌شده
-  void _showAddBlockModal(BuildContext context, DateTime defaultStart) {
+  void _showAddBlockModal(BuildContext context, DateTime defaultStart,
+      {DateTime? defaultEnd}) {
     final provider = context.read<AppStateProvider>();
     final titleCtrl = TextEditingController();
     AppRealm selectedRealm = provider.dashboardRealm;
     String? selectedProjectId;
     String? selectedOutcomeId;
     DateTime start = defaultStart;
-    DateTime end = defaultStart.add(const Duration(hours: 1));
+    DateTime end = defaultEnd ?? defaultStart.add(const Duration(hours: 1));
 
     showDialog<void>(
       context: context,
@@ -675,6 +794,11 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                       startTime: start,
                       endTime: end,
                     );
+                    _pushUndo(
+                      title: 'ایجاد برنامه «${block.title}»',
+                      undo: () => provider.deleteScheduledBlock(block.id),
+                      redo: () => provider.saveScheduledBlock(block),
+                    );
                     await provider.saveScheduledBlock(block);
                     if (ctx.mounted) Navigator.of(ctx).pop();
                   },
@@ -693,7 +817,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     final fallbackColor =
         block.isLife ? AppColors.lifeGreen : AppColors.workBlue;
     final color = project != null
-        ? Color(int.parse(project.colorHex.replaceFirst('#', '0xFF')))
+        ? ColorUtils.parseHex(project.colorHex, fallback: fallbackColor)
         : fallbackColor;
     final breadcrumb = provider.getProjectBreadcrumbString(block.projectId);
 
@@ -775,6 +899,12 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           TextButton(
             style: TextButton.styleFrom(foregroundColor: AppColors.draftWarning),
             onPressed: () async {
+              final blockCopy = block;
+              _pushUndo(
+                title: 'حذف برنامه «${block.title}»',
+                undo: () => provider.saveScheduledBlock(blockCopy),
+                redo: () => provider.deleteScheduledBlock(blockCopy.id),
+              );
               await provider.deleteScheduledBlock(block.id);
               if (ctx.mounted) Navigator.of(ctx).pop();
             },
@@ -977,6 +1107,12 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
           TextButton(
             style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
             onPressed: () async {
+              final recordCopy = record;
+              _pushUndo(
+                title: 'حذف گزارش «$displayTitle»',
+                undo: () => provider.restoreTimeRecord(recordCopy),
+                redo: () => provider.deleteTimeRecord(recordCopy.id),
+              );
               await provider.deleteTimeRecord(record.id);
               if (ctx.mounted) Navigator.of(ctx).pop();
             },
@@ -1028,65 +1164,87 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
     final palette = provider.activePalette;
     final displayedDays = _displayedDays;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildCalendarToolbar(provider, palette, displayedDays),
-          const SizedBox(height: 10),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+            _performUndo,
+        const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+            _performRedo,
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true):
+            _performRedo,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildCalendarToolbar(provider, palette, displayedDays),
+              const SizedBox(height: 10),
 
-          if (_calendarDisplayMode == CalendarDisplayMode.timesheet)
-            const Expanded(child: ActivityLogTab())
-          else ...[
-            _buildStickyDayHeaders(displayedDays, palette),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: palette.surface,
-                  borderRadius: const BorderRadius.vertical(
-                    bottom: Radius.circular(12),
-                  ),
-                  border: Border.all(color: palette.border, width: 1.0),
-                ),
-                child: Listener(
-                  onPointerSignal: (pointerSignal) {
-                    if (HardwareKeyboard.instance.isControlPressed &&
-                        pointerSignal is PointerScrollEvent) {
-                      final zoomDelta = -pointerSignal.scrollDelta.dy * 0.08;
-                      _changeZoom(zoomDelta);
-                    }
-                  },
-                  child: SingleChildScrollView(
-                    controller: _verticalScrollController,
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildTimeAxisColumn(),
-                        VerticalDivider(
-                          width: 1,
-                          thickness: 1,
-                          color: palette.border,
+              if (_calendarDisplayMode == CalendarDisplayMode.timesheet)
+                const Expanded(child: ActivityLogTab())
+              else ...[
+                _buildStickyDayHeaders(displayedDays, palette),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: palette.surface,
+                      borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(12),
+                      ),
+                      border: Border.all(color: palette.border, width: 1.0),
+                    ),
+                    child: Listener(
+                      onPointerSignal: (pointerSignal) {
+                        if (HardwareKeyboard.instance.isControlPressed &&
+                            pointerSignal is PointerScrollEvent) {
+                          final zoomDelta = -pointerSignal.scrollDelta.dy * 0.12;
+                          _changeZoom(zoomDelta,
+                              focalPointY: pointerSignal.localPosition.dy);
+                        }
+                      },
+                      onPointerPanZoomUpdate: (event) {
+                        if (event.scale != 1.0) {
+                          final zoomDelta =
+                              (event.scale - 1.0) * _hourHeight * 0.45;
+                          _changeZoom(zoomDelta,
+                              focalPointY: event.localPosition.dy);
+                        }
+                      },
+                      child: SingleChildScrollView(
+                        controller: _verticalScrollController,
+                        physics: const _CalendarZoomScrollPhysics(),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildTimeAxisColumn(),
+                            VerticalDivider(
+                              width: 1,
+                              thickness: 1,
+                              color: palette.border,
+                            ),
+                            Expanded(
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: displayedDays.map((day) {
+                                  return Expanded(
+                                    child: _buildDayColumn(day, provider, palette),
+                                  );
+                                }).toList(),
+                              ),
+                            ),
+                          ],
                         ),
-                        Expanded(
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: displayedDays.map((day) {
-                              return Expanded(
-                                child: _buildDayColumn(day, provider, palette),
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ),
-          ],
-        ],
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1277,6 +1435,19 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                         ),
                       ],
                     ),
+                  ),
+                  // دکمه‌های بازگردانی و انجام مجدد (Undo / Redo)
+                  IconButton(
+                    icon: const Icon(Icons.undo_rounded, size: 17),
+                    tooltip: 'بازگردانی (Ctrl+Z)',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _canUndo ? _performUndo : null,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.redo_rounded, size: 17),
+                    tooltip: 'انجام مجدد (Ctrl+Y)',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _canRedo ? _performRedo : null,
                   ),
                   FilledButton.tonalIcon(
                     style: FilledButton.styleFrom(
@@ -1534,6 +1705,70 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                 dayStart.add(Duration(hours: hour)),
               );
             },
+            onVerticalDragStart: (details) {
+              if (_activeDragId != null) return;
+              final startY = details.localPosition.dy.clamp(0.0, 24 * _hourHeight);
+              final isPlanned = details.localPosition.dx >= (colWidth / 2.0);
+              setState(() {
+                _dragCreateDay = day;
+                _dragCreateIsPlanned = isPlanned;
+                _dragCreateStartDy = startY;
+                _dragCreateCurrentDy = startY;
+              });
+            },
+            onVerticalDragUpdate: (details) {
+              if (_dragCreateStartDy == null) return;
+              setState(() {
+                _dragCreateCurrentDy =
+                    details.localPosition.dy.clamp(0.0, 24 * _hourHeight);
+              });
+            },
+            onVerticalDragEnd: (details) {
+              if (_dragCreateStartDy == null || _dragCreateCurrentDy == null) {
+                setState(() {
+                  _dragCreateDay = null;
+                  _dragCreateStartDy = null;
+                  _dragCreateCurrentDy = null;
+                });
+                return;
+              }
+              final topDy = math.min(_dragCreateStartDy!, _dragCreateCurrentDy!);
+              final bottomDy = math.max(_dragCreateStartDy!, _dragCreateCurrentDy!);
+              final isPlanned = _dragCreateIsPlanned;
+
+              setState(() {
+                _dragCreateDay = null;
+                _dragCreateStartDy = null;
+                _dragCreateCurrentDy = null;
+              });
+
+              if ((bottomDy - topDy) > 8) {
+                final startTotalMinutes =
+                    ((topDy / _hourHeight * 60.0) / 15.0).floor() * 15;
+                final endTotalMinutes = math.max(
+                  startTotalMinutes + 15,
+                  ((bottomDy / _hourHeight * 60.0) / 15.0).ceil() * 15,
+                );
+
+                final startDt =
+                    dayStart.add(Duration(minutes: startTotalMinutes));
+                final endDt =
+                    dayStart.add(Duration(minutes: endTotalMinutes));
+
+                if (isPlanned) {
+                  _showAddBlockModal(context, startDt, defaultEnd: endDt);
+                } else {
+                  _showAddManualLogModal(context, startDt, defaultEnd: endDt);
+                }
+              }
+            },
+            onVerticalDragCancel: () {
+              setState(() {
+                _dragCreateDay = null;
+                _dragCreateStartDy = null;
+                _dragCreateCurrentDy = null;
+              });
+            },
             child: SizedBox(
               height: 24 * _hourHeight,
               child: Stack(
@@ -1594,6 +1829,87 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                       ),
                     ),
 
+                  // پیش‌نمایش زنده درگ برای ساخت برنامه یا گزارش دستی
+                  if (_dragCreateDay != null &&
+                      DateUtils.isSameDay(_dragCreateDay!, day) &&
+                      _dragCreateStartDy != null &&
+                      _dragCreateCurrentDy != null) ...[
+                    Builder(
+                      builder: (_) {
+                        final topDy =
+                            math.min(_dragCreateStartDy!, _dragCreateCurrentDy!);
+                        final heightDy = math.max(
+                            14.0, (_dragCreateCurrentDy! - _dragCreateStartDy!).abs());
+                        final startMinutes =
+                            ((topDy / _hourHeight * 60.0) / 15.0).floor() * 15;
+                        final endMinutes = math.max(
+                          startMinutes + 15,
+                          (((topDy + heightDy) / _hourHeight * 60.0) / 15.0)
+                                  .ceil() *
+                              15,
+                        );
+                        final sTime =
+                            '${(startMinutes ~/ 60).toString().padLeft(2, '0')}:${(startMinutes % 60).toString().padLeft(2, '0')}';
+                        final eTime =
+                            '${(endMinutes ~/ 60).toString().padLeft(2, '0')}:${(endMinutes % 60).toString().padLeft(2, '0')}';
+                        final laneLeft =
+                            _dragCreateIsPlanned ? plannedLaneLeft : actualLaneLeft;
+                        final color = _dragCreateIsPlanned
+                            ? palette.accent
+                            : AppColors.draftWarning;
+
+                        return Positioned(
+                          top: topDy,
+                          left: laneLeft,
+                          width: halfLaneWidth,
+                          height: heightDy,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: color.withAlpha(45),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: color, width: 1.5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: color.withAlpha(50),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 3),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  _dragCreateIsPlanned
+                                      ? '+ برنامه جدید'
+                                      : '+ گزارش دستی',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: color,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  '$sTime - $eTime',
+                                  style: GoogleFonts.jetBrainsMono(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                  ),
+                                  maxLines: 1,
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+
                   // ۱. لاین برنامه‌ریزی (Planned Blocks)
                   ...plannedBlocks.map((b) {
                     final isThisActive = _activeDragId == b.id;
@@ -1625,9 +1941,12 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                         renderedHeight = (baseHeight + _dragAccumulatedDy)
                             .clamp(20.0, 24 * _hourHeight);
                       } else if (_isResizingTop) {
-                        renderedTop = (baseTop + _dragAccumulatedDy)
+                        final maxAllowedDy = baseHeight - 20.0;
+                        final effectiveDy =
+                            math.min(_dragAccumulatedDy, maxAllowedDy);
+                        renderedTop = (baseTop + effectiveDy)
                             .clamp(0.0, 24 * _hourHeight);
-                        renderedHeight = (baseHeight - _dragAccumulatedDy)
+                        renderedHeight = (baseHeight - effectiveDy)
                             .clamp(20.0, 24 * _hourHeight);
                       } else {
                         renderedTop = (baseTop + _dragAccumulatedDy)
@@ -1639,8 +1958,10 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     final fallbackCol =
                         b.isLife ? AppColors.lifeGreen : AppColors.workBlue;
                     final Color pColor = project != null
-                        ? Color(int.parse(
-                            project.colorHex.replaceFirst('#', '0xFF')))
+                        ? ColorUtils.parseHex(
+                            project.colorHex,
+                            fallback: fallbackCol,
+                          )
                         : fallbackCol;
 
                     return Positioned(
@@ -1679,21 +2000,72 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             _dragAccumulatedDy = 0.0;
                           });
                           if (deltaMinutes != 0) {
+                            final oldBlock = b;
                             final newStart =
                                 b.startTime.add(Duration(minutes: deltaMinutes));
                             final newEnd =
                                 b.endTime.add(Duration(minutes: deltaMinutes));
-                            await provider.saveScheduledBlock(
-                              b.copyWith(startTime: newStart, endTime: newEnd),
+                            final updatedBlock =
+                                b.copyWith(startTime: newStart, endTime: newEnd);
+                            _pushUndo(
+                              title: 'جابه‌جایی برنامه «${b.title}»',
+                              undo: () => provider.saveScheduledBlock(oldBlock),
+                              redo: () => provider.saveScheduledBlock(updatedBlock),
                             );
+                            await provider.saveScheduledBlock(updatedBlock);
                           }
                         },
-                        onResizeBottomUpdate: (dy) {
+                        onResizeTopStart: () {
                           setState(() {
                             _activeDragId = b.id;
-                            _isResizingBottom = true;
-                            _dragAccumulatedDy += dy;
+                            _dragAccumulatedDy = 0.0;
+                            _isResizingTop = true;
+                            _isResizingBottom = false;
                           });
+                        },
+                        onResizeTopUpdate: (dy) {
+                          setState(() => _dragAccumulatedDy += dy);
+                        },
+                        onResizeTopEnd: () async {
+                          final deltaMinutes =
+                              ((_dragAccumulatedDy / _hourHeight * 60.0) / 5.0)
+                                      .round() *
+                                  5;
+                          setState(() {
+                            _activeDragId = null;
+                            _isResizingTop = false;
+                            _dragAccumulatedDy = 0.0;
+                          });
+                          if (deltaMinutes != 0) {
+                            final candidateStart =
+                                b.startTime.add(Duration(minutes: deltaMinutes));
+                            if (b.endTime
+                                    .difference(candidateStart)
+                                    .inMinutes >=
+                                5) {
+                              final oldBlock = b;
+                              final updatedBlock =
+                                  b.copyWith(startTime: candidateStart);
+                              _pushUndo(
+                                title: 'تغییر زمان شروع برنامه «${b.title}»',
+                                undo: () => provider.saveScheduledBlock(oldBlock),
+                                redo: () =>
+                                    provider.saveScheduledBlock(updatedBlock),
+                              );
+                              await provider.saveScheduledBlock(updatedBlock);
+                            }
+                          }
+                        },
+                        onResizeBottomStart: () {
+                          setState(() {
+                            _activeDragId = b.id;
+                            _dragAccumulatedDy = 0.0;
+                            _isResizingTop = false;
+                            _isResizingBottom = true;
+                          });
+                        },
+                        onResizeBottomUpdate: (dy) {
+                          setState(() => _dragAccumulatedDy += dy);
                         },
                         onResizeBottomEnd: () async {
                           final deltaMinutes =
@@ -1708,11 +2080,20 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                           if (deltaMinutes != 0) {
                             final candidateEnd =
                                 b.endTime.add(Duration(minutes: deltaMinutes));
-                            if (candidateEnd.difference(b.startTime).inMinutes >=
+                            if (candidateEnd
+                                    .difference(b.startTime)
+                                    .inMinutes >=
                                 5) {
-                              await provider.saveScheduledBlock(
-                                b.copyWith(endTime: candidateEnd),
+                              final oldBlock = b;
+                              final updatedBlock =
+                                  b.copyWith(endTime: candidateEnd);
+                              _pushUndo(
+                                title: 'تغییر مدت برنامه «${b.title}»',
+                                undo: () => provider.saveScheduledBlock(oldBlock),
+                                redo: () =>
+                                    provider.saveScheduledBlock(updatedBlock),
                               );
+                              await provider.saveScheduledBlock(updatedBlock);
                             }
                           }
                         },
@@ -1754,6 +2135,14 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                     if (isThisActive) {
                       if (_isResizingBottom) {
                         renderedHeight = (baseHeight + _dragAccumulatedDy)
+                            .clamp(20.0, 24 * _hourHeight);
+                      } else if (_isResizingTop) {
+                        final maxAllowedDy = baseHeight - 20.0;
+                        final effectiveDy =
+                            math.min(_dragAccumulatedDy, maxAllowedDy);
+                        renderedTop = (baseTop + effectiveDy)
+                            .clamp(0.0, 24 * _hourHeight);
+                        renderedHeight = (baseHeight - effectiveDy)
                             .clamp(20.0, 24 * _hourHeight);
                       } else {
                         renderedTop = (baseTop + _dragAccumulatedDy)
@@ -1804,6 +2193,7 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                           setState(() {
                             _activeDragId = r.id;
                             _dragAccumulatedDy = 0.0;
+                            _isResizingTop = false;
                             _isResizingBottom = false;
                           });
                         },
@@ -1822,27 +2212,110 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             _dragAccumulatedDy = 0.0;
                           });
                           if (deltaMinutes != 0) {
-                            final newStart = r.startTime
-                                .add(Duration(minutes: deltaMinutes));
-                            final newEnd = r.endTime
-                                    ?.add(Duration(minutes: deltaMinutes)) ??
-                                newStart
+                            final oldStart = r.startTime;
+                            final oldEnd = r.endTime ??
+                                r.startTime
                                     .add(Duration(seconds: r.durationSeconds));
+                            final newStart =
+                                oldStart.add(Duration(minutes: deltaMinutes));
+                            final newEnd =
+                                oldEnd.add(Duration(minutes: deltaMinutes));
+                            final rBefore = r;
+                            _pushUndo(
+                              title: 'جابه‌جایی گزارش «$title»',
+                              undo: () => provider.updateTimeRecordTimes(
+                                id: rBefore.id,
+                                newStartTime: oldStart,
+                                newEndTime: oldEnd,
+                                editNote: 'بازگردانی جابه‌جایی در تقویم',
+                              ),
+                              redo: () => provider.updateTimeRecordTimes(
+                                id: rBefore.id,
+                                newStartTime: newStart,
+                                newEndTime: newEnd,
+                                editNote: 'جابه‌جایی در تقویم',
+                              ),
+                            );
                             await provider.updateTimeRecordTimes(
                               id: r.id,
                               newStartTime: newStart,
                               newEndTime: newEnd,
-                              editNote: 'جابه‌جایی دستی در تقویم',
+                              editNote: 'جابه‌جایی در تقویم',
                             );
                           }
                         },
-                        onResizeBottomUpdate: (dy) {
+                        onResizeTopStart: () {
                           if (r.isOpen) return;
                           setState(() {
                             _activeDragId = r.id;
-                            _isResizingBottom = true;
-                            _dragAccumulatedDy += dy;
+                            _dragAccumulatedDy = 0.0;
+                            _isResizingTop = true;
+                            _isResizingBottom = false;
                           });
+                        },
+                        onResizeTopUpdate: (dy) {
+                          if (r.isOpen) return;
+                          setState(() => _dragAccumulatedDy += dy);
+                        },
+                        onResizeTopEnd: () async {
+                          if (r.isOpen) return;
+                          final deltaMinutes =
+                              ((_dragAccumulatedDy / _hourHeight * 60.0) / 5.0)
+                                      .round() *
+                                  5;
+                          setState(() {
+                            _activeDragId = null;
+                            _isResizingTop = false;
+                            _dragAccumulatedDy = 0.0;
+                          });
+                          if (deltaMinutes != 0) {
+                            final oldStart = r.startTime;
+                            final oldEnd = r.endTime ??
+                                r.startTime
+                                    .add(Duration(seconds: r.durationSeconds));
+                            final candidateStart =
+                                oldStart.add(Duration(minutes: deltaMinutes));
+                            if (oldEnd
+                                    .difference(candidateStart)
+                                    .inMinutes >=
+                                1) {
+                              final rBefore = r;
+                              _pushUndo(
+                                title: 'تغییر زمان شروع گزارش «$title»',
+                                undo: () => provider.updateTimeRecordTimes(
+                                  id: rBefore.id,
+                                  newStartTime: oldStart,
+                                  newEndTime: oldEnd,
+                                  editNote: 'بازگردانی زمان شروع',
+                                ),
+                                redo: () => provider.updateTimeRecordTimes(
+                                  id: rBefore.id,
+                                  newStartTime: candidateStart,
+                                  newEndTime: oldEnd,
+                                  editNote: 'تغییر شروع در تقویم',
+                                ),
+                              );
+                              await provider.updateTimeRecordTimes(
+                                id: r.id,
+                                newStartTime: candidateStart,
+                                newEndTime: oldEnd,
+                                editNote: 'تغییر شروع در تقویم',
+                              );
+                            }
+                          }
+                        },
+                        onResizeBottomStart: () {
+                          if (r.isOpen) return;
+                          setState(() {
+                            _activeDragId = r.id;
+                            _dragAccumulatedDy = 0.0;
+                            _isResizingTop = false;
+                            _isResizingBottom = true;
+                          });
+                        },
+                        onResizeBottomUpdate: (dy) {
+                          if (r.isOpen) return;
+                          setState(() => _dragAccumulatedDy += dy);
                         },
                         onResizeBottomEnd: () async {
                           if (r.isOpen) return;
@@ -1864,6 +2337,22 @@ class _CalendarGridTabState extends State<CalendarGridTab> {
                             final newDurationSec =
                                 candidateEnd.difference(r.startTime).inSeconds;
                             if (newDurationSec >= 60) {
+                              final rBefore = r;
+                              _pushUndo(
+                                title: 'تغییر مدت گزارش «$title»',
+                                undo: () => provider.updateTimeRecordTimes(
+                                  id: rBefore.id,
+                                  newStartTime: rBefore.startTime,
+                                  newEndTime: oldEnd,
+                                  editNote: 'بازگردانی پایان',
+                                ),
+                                redo: () => provider.updateTimeRecordTimes(
+                                  id: rBefore.id,
+                                  newStartTime: rBefore.startTime,
+                                  newEndTime: candidateEnd,
+                                  editNote: 'تغییر بازه زمانی در تقویم',
+                                ),
+                              );
                               await provider.updateTimeRecordTimes(
                                 id: r.id,
                                 newStartTime: r.startTime,
@@ -1898,11 +2387,15 @@ class _InteractiveCalendarBlock extends StatelessWidget {
   final bool isStopwatch;
   final double height;
   final VoidCallback onTap;
-  final VoidCallback onDragStart;
-  final ValueChanged<double> onDragUpdate;
-  final VoidCallback onDragEnd;
-  final ValueChanged<double> onResizeBottomUpdate;
-  final VoidCallback onResizeBottomEnd;
+  final VoidCallback? onDragStart;
+  final ValueChanged<double>? onDragUpdate;
+  final VoidCallback? onDragEnd;
+  final VoidCallback? onResizeTopStart;
+  final ValueChanged<double>? onResizeTopUpdate;
+  final VoidCallback? onResizeTopEnd;
+  final VoidCallback? onResizeBottomStart;
+  final ValueChanged<double>? onResizeBottomUpdate;
+  final VoidCallback? onResizeBottomEnd;
 
   const _InteractiveCalendarBlock({
     required this.id,
@@ -1916,11 +2409,15 @@ class _InteractiveCalendarBlock extends StatelessWidget {
     this.isStopwatch = false,
     required this.height,
     required this.onTap,
-    required this.onDragStart,
-    required this.onDragUpdate,
-    required this.onDragEnd,
-    required this.onResizeBottomUpdate,
-    required this.onResizeBottomEnd,
+    this.onDragStart,
+    this.onDragUpdate,
+    this.onDragEnd,
+    this.onResizeTopStart,
+    this.onResizeTopUpdate,
+    this.onResizeTopEnd,
+    this.onResizeBottomStart,
+    this.onResizeBottomUpdate,
+    this.onResizeBottomEnd,
   });
 
   @override
@@ -1928,76 +2425,118 @@ class _InteractiveCalendarBlock extends StatelessWidget {
     final timeStr =
         '${intl.DateFormat('HH:mm').format(startTime)} - ${intl.DateFormat('HH:mm').format(endTime)}';
 
-    return GestureDetector(
-      onVerticalDragStart: (_) => onDragStart(),
-      onVerticalDragUpdate: (details) => onDragUpdate(details.delta.dy),
-      onVerticalDragEnd: (_) => onDragEnd(),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            decoration: BoxDecoration(
-              color:
-                  isPlanned ? color.withAlpha(30) : color.withAlpha(205),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: isPlanned
-                    ? color.withAlpha(160)
-                    : Colors.white.withAlpha(50),
-                width: 0.9,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withAlpha(isPlanned ? 35 : 70),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
+    final double handleHeight = math.min(10.0, height / 3.0);
+    final bool showTopHandle = onResizeTopUpdate != null && height >= 18.0;
+    final bool showBottomHandle = onResizeBottomUpdate != null && height >= 18.0;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isPlanned ? color.withAlpha(30) : color.withAlpha(205),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: isPlanned ? color.withAlpha(160) : Colors.white.withAlpha(50),
+          width: 0.9,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(isPlanned ? 35 : 70),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(5.5),
+        child: Stack(
+          children: [
+            // ۱. بدنه اصلی برای جابه‌جایی رویداد و کلیک
+            Positioned.fill(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  top: showTopHandle ? handleHeight : 0,
+                  bottom: showBottomHandle ? handleHeight : 0,
                 ),
-              ],
-            ),
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(5),
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.grab,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: onTap,
+                    onVerticalDragStart: (_) => onDragStart?.call(),
+                    onVerticalDragUpdate: (details) =>
+                        onDragUpdate?.call(details.delta.dy),
+                    onVerticalDragEnd: (_) => onDragEnd?.call(),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 3.5, vertical: 2),
+                          horizontal: 3.5, vertical: 1),
                       child: _buildAdaptiveContent(timeStr),
                     ),
                   ),
                 ),
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  height: 7,
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.resizeUpDown,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onVerticalDragUpdate: (d) =>
-                          onResizeBottomUpdate(d.delta.dy),
-                      onVerticalDragEnd: (_) => onResizeBottomEnd(),
-                      child: Center(
-                        child: Container(
-                          width: 18,
-                          height: 2.2,
-                          decoration: BoxDecoration(
-                            color: isPlanned
-                                ? color.withAlpha(180)
-                                : Colors.white.withAlpha(180),
-                            borderRadius: BorderRadius.circular(1),
-                          ),
+              ),
+            ),
+
+            // ۲. دستگیره تغییر اندازه از بالا (Resize Top)
+            if (showTopHandle)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: handleHeight,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeUpDown,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onVerticalDragStart: (_) => onResizeTopStart?.call(),
+                    onVerticalDragUpdate: (d) =>
+                        onResizeTopUpdate?.call(d.delta.dy),
+                    onVerticalDragEnd: (_) => onResizeTopEnd?.call(),
+                    child: Center(
+                      child: Container(
+                        width: 18,
+                        height: 2.0,
+                        decoration: BoxDecoration(
+                          color: isPlanned
+                              ? color.withAlpha(190)
+                              : Colors.white.withAlpha(190),
+                          borderRadius: BorderRadius.circular(1),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
+              ),
+
+            // ۳. دستگیره تغییر اندازه از پایین (Resize Bottom)
+            if (showBottomHandle)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: handleHeight,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeUpDown,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onVerticalDragStart: (_) => onResizeBottomStart?.call(),
+                    onVerticalDragUpdate: (d) =>
+                        onResizeBottomUpdate?.call(d.delta.dy),
+                    onVerticalDragEnd: (_) => onResizeBottomEnd?.call(),
+                    child: Center(
+                      child: Container(
+                        width: 18,
+                        height: 2.0,
+                        decoration: BoxDecoration(
+                          color: isPlanned
+                              ? color.withAlpha(190)
+                              : Colors.white.withAlpha(190),
+                          borderRadius: BorderRadius.circular(1),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

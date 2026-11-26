@@ -268,7 +268,7 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
           const SizedBox(height: 12),
 
-          // ۳. پلیر موسیقی تمرکز ADHD
+          // ۳. پلیر و مدیریت پوشه‌های موسیقی در دیتابیس
           Card(
             color: palette.surface,
             shape: RoundedRectangleBorder(
@@ -280,40 +280,215 @@ class _SettingsTabState extends State<SettingsTab> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('موسیقی تمرکز ویژه ADHD',
-                      style:
-                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                  const SizedBox(height: 8),
-                  Text('تعداد ترک‌های بارگذاری‌شده: ${music.tracks.length}',
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      FilledButton.icon(
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final isNarrow = constraints.maxWidth < 520;
+                      final titleWidget = Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.music_note_rounded,
+                              color: palette.accent, size: 22),
+                          const SizedBox(width: 8),
+                          const Flexible(
+                            child: Text(
+                              'مدیریت پوشه‌های موسیقی و پخش تصادفی',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 14.5),
+                            ),
+                          ),
+                        ],
+                      );
+                      final addBtn = FilledButton.icon(
                         style: FilledButton.styleFrom(
                             backgroundColor: palette.accent),
-                        icon: const Icon(Icons.folder_open, size: 16),
-                        label: const Text('انتخاب پوشه موسیقی از هارد'),
+                        icon: const Icon(Icons.create_new_folder_rounded,
+                            size: 16),
+                        label: const Text('افزودن پوشه جدید'),
                         onPressed: () async {
                           final selectedFolder =
                               await FilePicker.platform.getDirectoryPath();
                           if (selectedFolder != null) {
-                            final count = await music
-                                .loadTracksFromFolder(selectedFolder);
+                            await music.addFolder(selectedFolder);
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content:
-                                      Text('$count فایل صوتی بارگذاری شد.'),
+                                const SnackBar(
+                                  content: Text(
+                                      'پوشه جدید در دیتابیس ذخیره و فعال شد.'),
                                 ),
                               );
                             }
                           }
                         },
+                      );
+                      if (isNarrow) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            titleWidget,
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: AlignmentDirectional.centerStart,
+                              child: addBtn,
+                            ),
+                          ],
+                        );
+                      }
+                      return Row(
+                        children: [
+                          Expanded(child: titleWidget),
+                          addBtn,
+                        ],
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  if (music.playlists.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withAlpha(8),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.folder_off_outlined,
+                              size: 16, color: AppColors.textMuted),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'هیچ پوشه موسیقی ذخیره نشده است. با دکمه «افزودن پوشه جدید» مسیر پوشه آهنگ‌های خود را انتخاب کنید.',
+                              style: TextStyle(
+                                  fontSize: 12, color: AppColors.textMuted),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else ...[
+                    const Text('پوشه‌های ذخیره‌شده در دیتابیس:',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textSecondary)),
+                    const SizedBox(height: 6),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: music.playlists.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 6),
+                      itemBuilder: (ctx, i) {
+                        final pl = music.playlists[i];
+                        final isActive = music.activePlaylist?.id == pl.id;
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isActive
+                                ? palette.accent.withAlpha(25)
+                                : AppColors.background,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isActive
+                                  ? palette.accent.withAlpha(120)
+                                  : AppColors.border,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                isActive
+                                    ? Icons.radio_button_checked_rounded
+                                    : Icons.radio_button_off_rounded,
+                                size: 16,
+                                color: isActive
+                                    ? palette.accent
+                                    : AppColors.textMuted,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      pl.name,
+                                      style: TextStyle(
+                                        fontSize: 12.5,
+                                        fontWeight: isActive
+                                            ? FontWeight.bold
+                                            : FontWeight.w500,
+                                        color: isActive
+                                            ? palette.accent
+                                            : AppColors.textPrimary,
+                                      ),
+                                    ),
+                                    Text(
+                                      pl.folderPath,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 10,
+                                          color: AppColors.textMuted),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (!isActive)
+                                TextButton(
+                                  onPressed: () => music.selectPlaylist(pl),
+                                  child: const Text('انتخاب به‌عنوان فعال',
+                                      style: TextStyle(fontSize: 11)),
+                                )
+                              else
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: palette.accent.withAlpha(40),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: const Text('پوشه فعال فعلی',
+                                      style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold)),
+                                ),
+                              const SizedBox(width: 6),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline_rounded,
+                                    size: 16, color: AppColors.overtime),
+                                tooltip: 'حذف این پوشه',
+                                onPressed: () async {
+                                  await music.deletePlaylist(pl.id);
+                                },
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  const Divider(color: AppColors.border),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 16,
+                    runSpacing: 8,
+                    children: [
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 320),
+                        child: SwitchListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text(
+                            'پخش تصادفی (Random) در پوشه‌ها',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          subtitle: const Text(
+                            'آهنگ بعدی و قبلی به صورت شانسی انتخاب می‌شود',
+                            style: TextStyle(
+                                fontSize: 10, color: AppColors.textMuted),
+                          ),
+                          value: music.isShuffle,
+                          onChanged: (_) => music.toggleShuffle(),
+                        ),
                       ),
                       ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 340),
@@ -321,8 +496,13 @@ class _SettingsTabState extends State<SettingsTab> {
                           dense: true,
                           contentPadding: EdgeInsets.zero,
                           title: const Text(
-                            'ادامه پخش موسیقی در قلمرو زندگی (پیش‌فرض: خاموش)',
+                            'ادامه پخش موسیقی در قلمرو زندگی',
                             style: TextStyle(fontSize: 12),
+                          ),
+                          subtitle: const Text(
+                            'پیش‌فرض خاموش (قطع موزیک در زمان استراحت)',
+                            style: TextStyle(
+                                fontSize: 10, color: AppColors.textMuted),
                           ),
                           value: music.playDuringBreaks,
                           onChanged: music.setPlayDuringBreaks,
@@ -336,7 +516,78 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
           const SizedBox(height: 12),
 
-          // ۴. تنظیمات دوگانه Google Calendar API v3 (چالش ۷)
+          // ۴. اسلایدشوی طبیعت و صدای آبشار در حالت زندگی
+          Card(
+            color: palette.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: palette.border),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.forest_rounded,
+                          color: AppColors.lifeGreen, size: 22),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'اسلایدشوی تمام‌صفحه طبیعت و صدای آبشار در حالت زندگی',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 14.5),
+                        ),
+                      ),
+                      Switch(
+                        value: provider.isLifeNatureSlideshowEnabled,
+                        activeThumbColor: AppColors.lifeGreen,
+                        onChanged: (val) async {
+                          await provider.setLifeNatureSlideshowEnabled(val);
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'هنگام ورود به قلمرو زندگی (استراحت)، یک اسلایدشوی آرامش‌بخش از طبیعت، صدای زنده آبشار و طبیعت و نمایش تایمر استراحت روی تمام دسکتاپ‌ها پخش می‌شود.',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                        height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.lifeGreen,
+                          side: const BorderSide(color: AppColors.lifeGreen),
+                        ),
+                        icon: const Icon(Icons.slideshow_rounded, size: 16),
+                        label: const Text('پیش‌نمایش اسلایدشو طبیعت'),
+                        onPressed: () async {
+                          await provider.activateNatureSlideshow();
+                        },
+                      ),
+                      const Text(
+                        'دکمه بستن در بالای صفحه و کلید Esc برای خروج سریع در دسترس است.',
+                        style: TextStyle(
+                            fontSize: 10.5, color: AppColors.textMuted),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ۵. تنظیمات دوگانه Google Calendar API v3 (چالش ۷)
           Card(
             color: palette.surface,
             shape: RoundedRectangleBorder(
@@ -505,6 +756,55 @@ class _SettingsTabState extends State<SettingsTab> {
                         ),
                       ),
                     ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ۵. درباره نسخه و سیستم نسخه‌گذاری
+          Card(
+            color: palette.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: palette.border),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.info_outline_rounded,
+                          size: 18, color: palette.accent),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'درباره نسخه و شناسنامه انتشار',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 14.5, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'نسخه فعلی: v4.1.0+2 — تداوم تمرکز (Focus Continuity)',
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.bold,
+                      color: palette.accent,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'منطق نسخه‌گذاری (MAJOR.MINOR.PATCH+BUILD): تغییر MAJOR برای بازطراحی معماری، MINOR برای قابلیت‌های کلیدی جدید، PATCH برای رفع باگ‌ها، و BUILD برای هر خروجی رسمی.',
+                    style: TextStyle(
+                        fontSize: 11.5, color: AppColors.textSecondary),
                   ),
                 ],
               ),

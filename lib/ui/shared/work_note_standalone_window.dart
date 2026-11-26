@@ -17,6 +17,8 @@ import '../../core/constants.dart';
 import '../../core/jalali_date.dart';
 import '../../models/pomodoro_state.dart';
 import '../../models/session_note.dart';
+import '../../models/project_node.dart';
+import '../../models/outcome_item.dart';
 import '../../services/database_service.dart';
 import 'work_note_window_coordinator.dart';
 
@@ -133,6 +135,8 @@ class WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView>
   String? _projectName;
   String? _projectColorHex;
   late DateTime _openedAt;
+  List<ProjectNode> _availableProjects = [];
+  List<OutcomeItem> _availableOutcomes = [];
 
   bool _isVisible = false;
   bool _allowPermanentClose = false;
@@ -159,10 +163,25 @@ class WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView>
     _projectColorHex = widget.projectColorHex;
     _openedAt = DateTime.now();
 
+    _loadProjectsAndOutcomes();
+
     if (widget.manageNativeWindow) {
       windowManager.addListener(this);
       _initFuture = _initSubWindow();
     }
+  }
+
+  Future<void> _loadProjectsAndOutcomes() async {
+    try {
+      final p = await DatabaseService.instance.getProjects();
+      final o = await DatabaseService.instance.getOutcomes();
+      if (mounted) {
+        setState(() {
+          _availableProjects = p;
+          _availableOutcomes = o;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _waitForNextFrame(Duration timeout) async {
@@ -246,6 +265,7 @@ class WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView>
   /// اعمال کانتکست فعالیت جاری و نمایش فوری پنجره از حالت مخفی (یا آوردن به جلو)
   Future<void> applyOpenPayload(Map<dynamic, dynamic> args) async {
     await (_initFuture ?? Future<void>.value());
+    await _loadProjectsAndOutcomes();
     if (!mounted) return;
 
     final bool wasVisible = _isVisible;
@@ -664,46 +684,209 @@ class WorkNoteStandaloneViewState extends State<WorkNoteStandaloneView>
                           children: [
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 6),
+                                  horizontal: 10, vertical: 8),
                               decoration: BoxDecoration(
                                 color: AppColors.surfaceElevated,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: AppColors.border),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: realmColor.withAlpha(90)),
                               ),
-                              child: Row(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  Icon(Icons.link_rounded,
-                                      size: 14, color: realmColor),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      _taskTitle,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: AppColors.textPrimary,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  if (_projectName != null) ...[
-                                    const SizedBox(width: 8),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: projectColor.withAlpha(40),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Text(
-                                        _projectName!,
-                                        style: TextStyle(
-                                          fontSize: 10.5,
-                                          color: projectColor,
-                                          fontWeight: FontWeight.bold,
+                                  Row(
+                                    children: [
+                                      Icon(Icons.link_rounded,
+                                          size: 14, color: realmColor),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          _taskTitle,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppColors.textPrimary,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
+                                      if (_projectName != null) ...[
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: projectColor.withAlpha(40),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            _projectName!,
+                                            style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: projectColor,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                  if (_availableProjects.isNotEmpty) ...[
+                                    const Divider(height: 10, color: AppColors.border),
+                                    Row(
+                                      children: [
+                                        Icon(Icons.folder_outlined,
+                                            size: 13, color: projectColor),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: DropdownButtonHideUnderline(
+                                            child: DropdownButton<String?>(
+                                              value: _availableProjects.any(
+                                                      (p) => p.id == _projectId)
+                                                  ? _projectId
+                                                  : null,
+                                              isDense: true,
+                                              isExpanded: true,
+                                              dropdownColor: AppColors.surface,
+                                              hint: Text(
+                                                _projectName ??
+                                                    'انتخاب/تغییر پروژه...',
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    color: AppColors.textMuted),
+                                              ),
+                                              style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: AppColors.textPrimary),
+                                              items: [
+                                                const DropdownMenuItem<String?>(
+                                                  value: null,
+                                                  child: Text(
+                                                      'بدون پروژه (عمومی)',
+                                                      style: TextStyle(
+                                                          fontSize: 11)),
+                                                ),
+                                                ..._availableProjects
+                                                    .where((p) => !p.isArchived)
+                                                    .map((p) => DropdownMenuItem<
+                                                            String?>(
+                                                          value: p.id,
+                                                          child: Text(p.name,
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                              style: const TextStyle(
+                                                                  fontSize: 11)),
+                                                        )),
+                                              ],
+                                              onChanged: (newPid) {
+                                                setState(() {
+                                                  _projectId = newPid;
+                                                  final p = _availableProjects
+                                                      .where((p) =>
+                                                          p.id == newPid)
+                                                      .firstOrNull;
+                                                  _projectName = p?.name;
+                                                  _projectColorHex = p?.colorHex;
+                                                  if (_outcomeId != null) {
+                                                    final out = _availableOutcomes
+                                                        .where((o) =>
+                                                            o.id == _outcomeId)
+                                                        .firstOrNull;
+                                                    if (out != null &&
+                                                        out.projectId != newPid) {
+                                                      _outcomeId = null;
+                                                    }
+                                                  }
+                                                });
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: [
+                                        Icon(Icons.check_circle_outline_rounded,
+                                            size: 13, color: realmColor),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: DropdownButtonHideUnderline(
+                                            child: DropdownButton<String?>(
+                                              value: _availableOutcomes.any(
+                                                      (o) => o.id == _outcomeId)
+                                                  ? _outcomeId
+                                                  : null,
+                                              isDense: true,
+                                              isExpanded: true,
+                                              dropdownColor: AppColors.surface,
+                                              hint: Text(
+                                                _taskTitle,
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    color: AppColors.textPrimary),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: AppColors.textPrimary),
+                                              items: [
+                                                const DropdownMenuItem<String?>(
+                                                  value: null,
+                                                  child: Text(
+                                                      'بدون کار مشخص (یادداشت عمومی)',
+                                                      style: TextStyle(
+                                                          fontSize: 11)),
+                                                ),
+                                                ..._availableOutcomes
+                                                    .where((o) =>
+                                                        _projectId == null ||
+                                                        o.projectId == _projectId)
+                                                    .map((o) => DropdownMenuItem<
+                                                            String?>(
+                                                          value: o.id,
+                                                          child: Text(o.title,
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                              style: const TextStyle(
+                                                                  fontSize: 11)),
+                                                        )),
+                                              ],
+                                              onChanged: (newOid) {
+                                                setState(() {
+                                                  _outcomeId = newOid;
+                                                  if (newOid != null) {
+                                                    final out =
+                                                        _availableOutcomes
+                                                            .where((o) =>
+                                                                o.id == newOid)
+                                                            .firstOrNull;
+                                                    if (out != null) {
+                                                      _taskTitle = out.title;
+                                                      if (out.projectId != null) {
+                                                        _projectId =
+                                                            out.projectId;
+                                                        final p =
+                                                            _availableProjects
+                                                                .where((p) =>
+                                                                    p.id ==
+                                                                    out.projectId)
+                                                                .firstOrNull;
+                                                        _projectName = p?.name;
+                                                        _projectColorHex =
+                                                            p?.colorHex;
+                                                      }
+                                                    }
+                                                  }
+                                                });
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ],
                                 ],

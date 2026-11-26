@@ -18,6 +18,7 @@ import '../../models/time_record.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/database_service.dart';
 import '../shared/unified_project_selector.dart';
+import '../shared/edit_session_note_dialog.dart';
 
 class ProjectStudioTab extends StatefulWidget {
   const ProjectStudioTab({super.key});
@@ -131,252 +132,24 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
     ProjectNode? existing,
     String? initialParentId,
   }) async {
-    final realm = existing?.realm ?? provider.dashboardRealm;
-    final palette = realm == AppRealm.life ? RealmPalette.life : RealmPalette.work;
-
-    final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    final weeklyCtrl = TextEditingController(
-      text: (existing?.weeklyQuotaMinutes ?? 0) > 0
-          ? existing!.weeklyQuotaMinutes.toString()
-          : '',
-    );
-    final rateCtrl = TextEditingController(
-      text: (existing?.hourlyRate ?? 0) > 0
-          ? existing!.hourlyRate.toStringAsFixed(0)
-          : '',
-    );
-    final gcalCtrl =
-        TextEditingController(text: existing?.googleCalendarId ?? '');
-
-    String? parentId = existing != null ? existing.parentId : initialParentId;
-    String selectedColor =
-        existing?.colorHex ?? (realm == AppRealm.life ? '#10B981' : '#3B82F6');
-    String status = existing?.status ?? 'active';
-
-    // جلوگیری از چرخه مادر-فرزندی هنگام ویرایش
-    final Set<String> forbiddenParentIds = existing != null
-        ? DatabaseService.getProjectAndDescendantIds(
-            existing.id, provider.projects)
-        : <String>{};
-
-    await showDialog<void>(
+    final result = await showDialog<ProjectNode>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          final selectableParents = provider.projects
-              .where((p) => !forbiddenParentIds.contains(p.id))
-              .toList();
-
-          return AlertDialog(
-            backgroundColor: palette.surface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: palette.border),
-            ),
-            title: Row(
-              children: [
-                Icon(
-                  existing == null
-                      ? Icons.create_new_folder_rounded
-                      : Icons.edit_rounded,
-                  color: palette.accent,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  existing == null
-                      ? (initialParentId != null
-                          ? 'ایجاد زیرپروژه (${realm.labelFa})'
-                          : 'ایجاد پروژه جدید (${realm.labelFa})')
-                      : 'ویرایش پروژه: ${existing.name}',
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            content: SizedBox(
-              width: 460,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: nameCtrl,
-                      autofocus: true,
-                      decoration: const InputDecoration(
-                        labelText: 'نام پروژه یا زیرپروژه',
-                        hintText: 'مثلاً: اپلیکیشن موبایل / خواب شبانه',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    UnifiedProjectSelector(
-                      projects: selectableParents,
-                      realmFilter: realm,
-                      selectedProjectId: parentId,
-                      emptyLabel: 'پروژه ریشه (بدون مادر)',
-                      accentColor: palette.accent,
-                      onSelected: (pid) =>
-                          setDialogState(() => parentId = pid),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: weeklyCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'سهمیه هفتگی (دقیقه)',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(
-                            controller: rateCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'نرخ ساعتی (۰ = ارث از مادر)',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: gcalCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'شناسه تقویم گوگل اختصاصی (اختیاری)',
-                        hintText: 'خالی = ارث‌بری از مادر یا تقویم پیش‌فرض قلمرو',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    DropdownButtonFormField<String>(
-                      initialValue: status,
-                      decoration: const InputDecoration(
-                        labelText: 'وضعیت پروژه',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      dropdownColor: palette.surfaceElevated,
-                      items: const [
-                        DropdownMenuItem(value: 'active', child: Text('فعال')),
-                        DropdownMenuItem(
-                            value: 'suspended', child: Text('معلق (متوقف موقت)')),
-                        DropdownMenuItem(
-                            value: 'archived', child: Text('آرشیوشده')),
-                      ],
-                      onChanged: (val) =>
-                          setDialogState(() => status = val ?? 'active'),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text('رنگ پروژه:',
-                        style: TextStyle(
-                            fontSize: 12, color: AppColors.textSecondary)),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      children: _colorSwatches.map((hex) {
-                        final col = _parseHex(hex, palette.accent);
-                        final isSel =
-                            selectedColor.toUpperCase() == hex.toUpperCase();
-                        return InkWell(
-                          onTap: () =>
-                              setDialogState(() => selectedColor = hex),
-                          borderRadius: BorderRadius.circular(18),
-                          child: Container(
-                            width: 28,
-                            height: 28,
-                            decoration: BoxDecoration(
-                              color: col,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: isSel ? Colors.white : Colors.transparent,
-                                width: 2.5,
-                              ),
-                            ),
-                            child: isSel
-                                ? const Icon(Icons.check,
-                                    size: 16, color: Colors.white)
-                                : null,
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('انصراف'),
-              ),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: palette.accent),
-                icon: const Icon(Icons.save_rounded, size: 16),
-                label: const Text('ذخیره پروژه'),
-                onPressed: () async {
-                  final cleanName = nameCtrl.text.trim();
-                  if (cleanName.isEmpty) return;
-
-                  final cleanGcal = gcalCtrl.text.trim();
-                  final node = existing != null
-                      ? existing.copyWith(
-                          name: cleanName,
-                          parentId: parentId,
-                          clearParentId: parentId == null,
-                          colorHex: selectedColor,
-                          weeklyQuotaMinutes:
-                              int.tryParse(weeklyCtrl.text) ?? 0,
-                          hourlyRate: double.tryParse(rateCtrl.text) ?? 0.0,
-                          googleCalendarId: cleanGcal,
-                          clearGoogleCalendarId: cleanGcal.isEmpty,
-                          status: status,
-                        )
-                      : ProjectNode(
-                          id: const Uuid().v4(),
-                          realm: realm,
-                          name: cleanName,
-                          parentId: parentId,
-                          colorHex: selectedColor,
-                          weeklyQuotaMinutes:
-                              int.tryParse(weeklyCtrl.text) ?? 0,
-                          hourlyRate: double.tryParse(rateCtrl.text) ?? 0.0,
-                          googleCalendarId:
-                              cleanGcal.isEmpty ? null : cleanGcal,
-                          status: status,
-                        );
-
-                  await provider.saveProject(node);
-                  if (mounted) {
-                    setState(() {
-                      _selectedProjectId = node.id;
-                      if (parentId != null) _expandedIds[parentId!] = true;
-                    });
-                  }
-                  if (ctx.mounted) Navigator.of(ctx).pop();
-                },
-              ),
-            ],
-          );
-        },
+      builder: (ctx) => _ProjectFormDialog(
+        provider: provider,
+        existing: existing,
+        initialParentId: initialParentId,
+        colorSwatches: _colorSwatches,
+        parseHex: _parseHex,
       ),
-    ).whenComplete(() {
-      nameCtrl.dispose();
-      weeklyCtrl.dispose();
-      rateCtrl.dispose();
-      gcalCtrl.dispose();
-    });
+    );
+    if (result != null && mounted) {
+      setState(() {
+        _selectedProjectId = result.id;
+        if (result.parentId != null) {
+          _expandedIds[result.parentId!] = true;
+        }
+      });
+    }
   }
 
   void _showPhaseTagsDialog(
@@ -739,6 +512,59 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
                           palette,
                           isMobile: isMobile,
                         ),
+                      const SizedBox(height: 8),
+                      DragTarget<String>(
+                        onWillAcceptWithDetails: (details) {
+                          final dragged = provider.getProjectById(details.data);
+                          return dragged != null &&
+                              dragged.realm == realm &&
+                              dragged.parentId != null;
+                        },
+                        onAcceptWithDetails: (details) async {
+                          await provider.setProjectParent(details.data, null);
+                        },
+                        builder: (context, candidateData, rejectedData) {
+                          final isHovering = candidateData.isNotEmpty;
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: isHovering
+                                  ? palette.accent.withAlpha(35)
+                                  : palette.surfaceElevated.withAlpha(120),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: isHovering
+                                    ? palette.accent
+                                    : palette.border,
+                                style: BorderStyle.solid,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.vertical_align_top_rounded,
+                                  size: 15,
+                                  color: isHovering
+                                      ? palette.accent
+                                      : AppColors.textSecondary,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'رها کردن در اینجا برای تبدیل به ریشه',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: isHovering
+                                        ? palette.accent
+                                        : AppColors.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
                     ],
                   ),
           ),
@@ -772,109 +598,166 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
         ? '${(rollupSec / 3600.0).toStringAsFixed(1)}h'
         : '${(rollupSec / 60).round()}m';
 
+    final nodeRow = InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => setState(() {
+        _selectedProjectId = node.id;
+        if (isMobile) _showMobileDetail = true;
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? palette.accent.withAlpha(35)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? palette.accent : Colors.transparent,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            if (hasChildren)
+              InkWell(
+                onTap: () => setState(() => _expandedIds[node.id] = !isExpanded),
+                child: Icon(
+                  isExpanded
+                      ? Icons.keyboard_arrow_down_rounded
+                      : Icons.keyboard_arrow_left_rounded,
+                  size: 18,
+                  color: AppColors.textSecondary,
+                ),
+              )
+            else
+              const SizedBox(width: 18),
+            const SizedBox(width: 4),
+            Container(
+              width: 9,
+              height: 9,
+              decoration:
+                  BoxDecoration(color: pColor, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                node.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: depth == 0 ? 12.8 : 12.0,
+                  fontWeight:
+                      depth == 0 || isSelected ? FontWeight.bold : FontWeight.w500,
+                  color: node.isArchived
+                      ? AppColors.textMuted
+                      : AppColors.textPrimary,
+                ),
+              ),
+            ),
+            if (node.isSleepProject)
+              const Tooltip(
+                message: 'پروژه خواب — ریست خودکار چرخه Flowmodoro',
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 3),
+                  child: Icon(Icons.bedtime_rounded,
+                      size: 13, color: AppColors.lifeGreen),
+                ),
+              ),
+            if (node.isSuspended)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 3),
+                child: Icon(Icons.pause_circle_outline,
+                    size: 13, color: AppColors.draftWarning),
+              ),
+            if (rollupSec > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  rollupHoursStr,
+                  style: GoogleFonts.jetBrainsMono(
+                    fontSize: 10,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ),
+            IconButton(
+              tooltip: 'افزودن زیرپروژه به «${node.name}»',
+              icon: Icon(Icons.add_circle_outline,
+                  size: 16, color: palette.accent),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              onPressed: () => _showProjectFormDialog(
+                context,
+                provider,
+                initialParentId: node.id,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
     final widgets = <Widget>[
       Padding(
         padding: EdgeInsetsDirectional.only(
           start: (depth * 14.0).clamp(0.0, 96.0),
           bottom: 3,
         ),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => setState(() {
-            _selectedProjectId = node.id;
-            if (isMobile) _showMobileDetail = true;
-          }),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? palette.accent.withAlpha(35)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: isSelected ? palette.accent : Colors.transparent,
-                width: 1,
-              ),
-            ),
-            child: Row(
-              children: [
-                if (hasChildren)
-                  InkWell(
-                    onTap: () => setState(() => _expandedIds[node.id] = !isExpanded),
-                    child: Icon(
-                      isExpanded
-                          ? Icons.keyboard_arrow_down_rounded
-                          : Icons.keyboard_arrow_left_rounded,
-                      size: 18,
-                      color: AppColors.textSecondary,
+        child: DragTarget<String>(
+          onWillAcceptWithDetails: (details) {
+            final draggedId = details.data;
+            if (draggedId == node.id) return false;
+            final dragged = provider.getProjectById(draggedId);
+            if (dragged == null || dragged.realm != node.realm) return false;
+            final descendants = DatabaseService.getProjectAndDescendantIds(
+              draggedId,
+              provider.projects,
+            );
+            return !descendants.contains(node.id);
+          },
+          onAcceptWithDetails: (details) async {
+            await provider.setProjectParent(details.data, node.id);
+            if (mounted) {
+              setState(() => _expandedIds[node.id] = true);
+            }
+          },
+          builder: (context, candidateData, rejectedData) {
+            final isHovering = candidateData.isNotEmpty;
+            return Container(
+              decoration: isHovering
+                  ? BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: palette.accent, width: 1.5),
+                      color: palette.accent.withAlpha(25),
+                    )
+                  : null,
+              child: Draggable<String>(
+                data: node.id,
+                feedback: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: palette.surfaceElevated,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: palette.accent),
                     ),
-                  )
-                else
-                  const SizedBox(width: 18),
-                const SizedBox(width: 4),
-                Container(
-                  width: 9,
-                  height: 9,
-                  decoration:
-                      BoxDecoration(color: pColor, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    node.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: depth == 0 ? 12.8 : 12.0,
-                      fontWeight:
-                          depth == 0 || isSelected ? FontWeight.bold : FontWeight.w500,
-                      color: node.isArchived
-                          ? AppColors.textMuted
-                          : AppColors.textPrimary,
-                    ),
-                  ),
-                ),
-                if (node.isSleepProject)
-                  const Tooltip(
-                    message: 'پروژه خواب — ریست خودکار چرخه Flowmodoro',
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 3),
-                      child: Icon(Icons.bedtime_rounded,
-                          size: 13, color: AppColors.lifeGreen),
-                    ),
-                  ),
-                if (node.isSuspended)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 3),
-                    child: Icon(Icons.pause_circle_outline,
-                        size: 13, color: AppColors.draftWarning),
-                  ),
-                if (rollupSec > 0)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
                     child: Text(
-                      rollupHoursStr,
-                      style: GoogleFonts.jetBrainsMono(
-                        fontSize: 10,
-                        color: AppColors.textSecondary,
+                      node.name,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary,
                       ),
                     ),
                   ),
-                IconButton(
-                  tooltip: 'افزودن زیرپروژه به «${node.name}»',
-                  icon: Icon(Icons.add_circle_outline,
-                      size: 16, color: palette.accent),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-                  onPressed: () => _showProjectFormDialog(
-                    context,
-                    provider,
-                    initialParentId: node.id,
-                  ),
                 ),
-              ],
-            ),
-          ),
+                childWhenDragging: Opacity(opacity: 0.45, child: nodeRow),
+                child: nodeRow,
+              ),
+            );
+          },
         ),
       ),
     ];
@@ -1101,6 +984,20 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
                             }
                           },
                         ),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact),
+                        icon: const Icon(Icons.merge_rounded,
+                            size: 15, color: AppColors.edited),
+                        label: const Text('ادغام',
+                            style: TextStyle(fontSize: 11)),
+                        onPressed: () => _showMergeDialog(
+                          context,
+                          provider,
+                          selected,
+                          palette,
+                        ),
+                      ),
                       IconButton(
                         tooltip: 'حذف پروژه و زیرمجموعه‌هایش',
                         icon: const Icon(Icons.delete_outline,
@@ -1420,27 +1317,316 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
           '${proj?.name ?? ""} • زمان کل: ${DateTimeUtils.formatDurationHms(totalSec)}',
           style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
         ),
-        trailing: o.isCompleted
-            ? TextButton(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.drive_file_move_outlined, size: 18),
+              tooltip: 'ویرایش و انتقال کار به پروژه دیگر',
+              onPressed: () =>
+                  _showEditOrTransferOutcomeDialog(context, provider, o),
+            ),
+            if (o.isCompleted)
+              TextButton(
                 onPressed: () => provider.reopenOutcome(o.id),
                 child: const Text('بازگشایی', style: TextStyle(fontSize: 11)),
               )
-            : (isActive
-                ? Text('فعال',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: palette.accent,
-                        fontWeight: FontWeight.bold))
-                : FilledButton.tonalIcon(
-                    style: FilledButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: palette.accent.withAlpha(35),
-                      foregroundColor: palette.accent,
+            else if (isActive)
+              Text('فعال',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: palette.accent,
+                      fontWeight: FontWeight.bold))
+            else
+              FilledButton.tonalIcon(
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  backgroundColor: palette.accent.withAlpha(35),
+                  foregroundColor: palette.accent,
+                ),
+                icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                label: const Text('شروع', style: TextStyle(fontSize: 11)),
+                onPressed: () => provider.startOrSwitchToOutcome(o),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showEditOrTransferOutcomeDialog(
+    BuildContext context,
+    AppStateProvider provider,
+    OutcomeItem outcome,
+  ) {
+    final titleCtrl = TextEditingController(text: outcome.title);
+    final descCtrl = TextEditingController(text: outcome.description);
+    String? selectedProjectId = outcome.projectId;
+    final palette = outcome.isLife ? RealmPalette.life : RealmPalette.work;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: palette.border),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.drive_file_move_rounded,
+                  color: palette.accent, size: 22),
+              const SizedBox(width: 8),
+              Text(
+                'ویرایش و انتقال کار (${outcome.realm.labelFa})',
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: titleCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'عنوان کار / نتیجه ملموس',
+                      border: OutlineInputBorder(),
+                      isDense: true,
                     ),
-                    icon: const Icon(Icons.play_arrow_rounded, size: 15),
-                    label: const Text('شروع', style: TextStyle(fontSize: 11)),
-                    onPressed: () => provider.startOrSwitchToOutcome(o),
-                  )),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: descCtrl,
+                    maxLines: 3,
+                    minLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: 'توضیحات (اختیاری)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('پروژه مقصد:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 6),
+                  UnifiedProjectSelector(
+                    projects: provider.projects,
+                    realmFilter: outcome.realm,
+                    selectedProjectId: selectedProjectId,
+                    accentColor: palette.accent,
+                    onSelected: (pid) =>
+                        setDialogState(() => selectedProjectId = pid),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'نکته: انتقال کار به پروژه دیگر به صورت خودکار تمام رکوردهای زمانی و یادداشت‌های متصل به آن را نیز به پروژه جدید منتقل می‌کند.',
+                    style: TextStyle(
+                        fontSize: 11, color: AppColors.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('انصراف'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: palette.accent),
+              icon: const Icon(Icons.save_rounded, size: 16),
+              label: const Text('ذخیره و انتقال'),
+              onPressed: () async {
+                final clean = titleCtrl.text.trim();
+                if (clean.isEmpty) return;
+                await provider.saveOutcome(
+                  outcome.copyWith(
+                    title: clean,
+                    description: descCtrl.text.trim(),
+                    projectId: selectedProjectId,
+                    clearProjectId: selectedProjectId == null,
+                  ),
+                );
+                if (ctx.mounted) Navigator.of(ctx).pop();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          'کار «$clean» و تمام رکوردهای متصل منتقل شدند.'),
+                      backgroundColor: palette.accent,
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(() {
+      titleCtrl.dispose();
+      descCtrl.dispose();
+    });
+  }
+
+  void _showTransferRecordDialog(
+    BuildContext context,
+    AppStateProvider provider,
+    TimeRecord record,
+  ) {
+    String? selectedProjectId = record.projectId;
+    String? selectedOutcomeId = record.outcomeId;
+    final palette = record.isLife ? RealmPalette.life : RealmPalette.work;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final availableOutcomes = selectedProjectId != null
+              ? provider.outcomes
+                  .where((o) => o.projectId == selectedProjectId)
+                  .toList()
+              : provider.outcomes;
+
+          return AlertDialog(
+            backgroundColor: palette.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: palette.border),
+            ),
+            title: Row(
+              children: [
+                Icon(Icons.drive_file_move_rounded,
+                    color: palette.accent, size: 22),
+                const SizedBox(width: 8),
+                const Text(
+                  'انتقال رکورد زمانی به پروژه دیگر',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('عنوان رکورد: ${record.titleSnapshot}',
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  const Text('پروژه مقصد:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 6),
+                  UnifiedProjectSelector(
+                    projects: provider.projects,
+                    realmFilter: record.realm,
+                    selectedProjectId: selectedProjectId,
+                    accentColor: palette.accent,
+                    onSelected: (pid) => setDialogState(() {
+                      selectedProjectId = pid;
+                      if (selectedOutcomeId != null) {
+                        final out =
+                            provider.getOutcomeById(selectedOutcomeId!);
+                        if (out != null && out.projectId != pid) {
+                          selectedOutcomeId = null;
+                        }
+                      }
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('کار / هدف متصل:',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceElevated,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String?>(
+                        value: availableOutcomes
+                                .any((o) => o.id == selectedOutcomeId)
+                            ? selectedOutcomeId
+                            : null,
+                        isExpanded: true,
+                        dropdownColor: palette.surface,
+                        hint: const Text('بدون کار مشخص',
+                            style: TextStyle(
+                                fontSize: 12, color: AppColors.textMuted)),
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textPrimary),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('بدون کار مشخص',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                          ...availableOutcomes.map((o) =>
+                              DropdownMenuItem<String?>(
+                                value: o.id,
+                                child: Text(o.title,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12)),
+                              )),
+                        ],
+                        onChanged: (newOid) =>
+                            setDialogState(() => selectedOutcomeId = newOid),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('انصراف'),
+              ),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                    backgroundColor: palette.accent),
+                icon: const Icon(Icons.save_rounded, size: 16),
+                label: const Text('ذخیره و انتقال'),
+                onPressed: () async {
+                  await provider.transferTimeRecord(
+                    recordId: record.id,
+                    newProjectId: selectedProjectId,
+                    newOutcomeId: selectedOutcomeId,
+                  );
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: const Text(
+                            'رکورد زمانی با موفقیت به پروژه جدید منتقل شد.'),
+                        backgroundColor: palette.accent,
+                      ),
+                    );
+                  }
+                },
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1495,6 +1681,12 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
                       fontSize: 12, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'انتقال این رکورد به پروژه دیگر',
+                  icon: const Icon(Icons.drive_file_move_outlined, size: 17),
+                  onPressed: () =>
+                      _showTransferRecordDialog(context, provider, r),
+                ),
                 IconButton(
                   tooltip:
                       'تبدیل به ${r.isWork ? "زندگی" : "کار"} (چالش ۲)',
@@ -1610,6 +1802,53 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
                                   fontSize: 10.5,
                                   color: AppColors.textSecondary,
                                 ),
+                              ),
+                              const SizedBox(width: 6),
+                              IconButton(
+                                icon: const Icon(Icons.drive_file_move_outlined,
+                                    size: 16),
+                                tooltip:
+                                    'ویرایش و انتقال یادداشت به پروژه یا کار دیگر',
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () =>
+                                    EditSessionNoteDialog.show(context, note),
+                              ),
+                              const SizedBox(width: 6),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    size: 16, color: Colors.redAccent),
+                                tooltip: 'حذف یادداشت',
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () async {
+                                  final confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (c) => AlertDialog(
+                                      title: const Text('حذف یادداشت'),
+                                      content: const Text(
+                                          'آیا از حذف این یادداشت اطمینان دارید؟'),
+                                      actions: [
+                                        TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(c).pop(false),
+                                            child: const Text('انصراف')),
+                                        FilledButton(
+                                          style: FilledButton.styleFrom(
+                                              backgroundColor: Colors.redAccent),
+                                          onPressed: () =>
+                                              Navigator.of(c).pop(true),
+                                          child: const Text('حذف'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  if (confirm == true) {
+                                    await provider.deleteSessionNote(note.id);
+                                  }
+                                },
                               ),
                             ],
                           ),
@@ -1765,6 +2004,127 @@ class _ProjectStudioTabState extends State<ProjectStudioTab> {
       },
     );
   }
+
+  /// دیالوگ ادغام پروژه: انتخاب پروژه مقصد و تایید اتمی
+  Future<void> _showMergeDialog(
+    BuildContext context,
+    AppStateProvider provider,
+    ProjectNode source,
+    RealmPalette palette,
+  ) async {
+    // پروژه‌های قابل انتخاب به عنوان مقصد (نه خودش و نه فرزندانش)
+    final forbidden = DatabaseService.getProjectAndDescendantIds(
+        source.id, provider.projects);
+    final candidates = provider.projects
+        .where((p) => !forbidden.contains(p.id) && p.realm == source.realm)
+        .toList();
+
+    if (candidates.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('هیچ پروژه‌ای برای ادغام وجود ندارد.')),
+        );
+      }
+      return;
+    }
+
+    String? selectedTargetId;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: palette.border),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.merge_rounded, color: AppColors.edited, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'ادغام «${source.name}» در پروژه دیگر',
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 380,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'تمام کارها، رکوردها، یادداشت‌ها و بلوک‌های پروژه مبدأ به پروژه مقصد منتقل می‌شوند. زیرپروژه‌های مستقیم آن نیز فرزند پروژه مقصد می‌شوند. سپس پروژه مبدأ حذف می‌شود.',
+                    style: TextStyle(
+                        fontSize: 11.5, color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text('انتخاب پروژه مقصد:',
+                      style:
+                          TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  ...candidates.map((p) {
+                    final breadcrumb =
+                        provider.getProjectBreadcrumbString(p.id);
+                    final isTarget = selectedTargetId == p.id;
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        isTarget
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        size: 18,
+                        color: isTarget
+                            ? AppColors.edited
+                            : AppColors.textSecondary,
+                      ),
+                      title: Text(breadcrumb,
+                          style: const TextStyle(fontSize: 12.5)),
+                      onTap: () =>
+                          setDlgState(() => selectedTargetId = p.id),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('انصراف'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: selectedTargetId != null
+                      ? AppColors.edited
+                      : AppColors.textMuted),
+              onPressed: selectedTargetId != null
+                  ? () => Navigator.of(ctx).pop(true)
+                  : null,
+              child: const Text('ادغام'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed == true && selectedTargetId != null) {
+      await provider.mergeProject(source.id, selectedTargetId!);
+      if (mounted) {
+        setState(() {
+          _selectedProjectId = selectedTargetId;
+          _showMobileDetail = false;
+        });
+      }
+    }
+  }
 }
 
 class _StudioStatCard extends StatelessWidget {
@@ -1858,6 +2218,274 @@ class _MiniMetric extends StatelessWidget {
         Text(value,
             style: TextStyle(
                 fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+      ],
+    );
+  }
+}
+
+class _ProjectFormDialog extends StatefulWidget {
+  final AppStateProvider provider;
+  final ProjectNode? existing;
+  final String? initialParentId;
+  final List<String> colorSwatches;
+  final Color Function(String hex, Color fallback) parseHex;
+
+  const _ProjectFormDialog({
+    required this.provider,
+    this.existing,
+    this.initialParentId,
+    required this.colorSwatches,
+    required this.parseHex,
+  });
+
+  @override
+  State<_ProjectFormDialog> createState() => _ProjectFormDialogState();
+}
+
+class _ProjectFormDialogState extends State<_ProjectFormDialog> {
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _weeklyCtrl;
+  late final TextEditingController _rateCtrl;
+  late final TextEditingController _gcalCtrl;
+  String? _parentId;
+  late String _selectedColor;
+  late String _status;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    final realm = existing?.realm ?? widget.provider.dashboardRealm;
+    _nameCtrl = TextEditingController(text: existing?.name ?? '');
+    _weeklyCtrl = TextEditingController(
+      text: (existing?.weeklyQuotaMinutes ?? 0) > 0
+          ? existing!.weeklyQuotaMinutes.toString()
+          : '',
+    );
+    _rateCtrl = TextEditingController(
+      text: (existing?.hourlyRate ?? 0) > 0
+          ? existing!.hourlyRate.toStringAsFixed(0)
+          : '',
+    );
+    _gcalCtrl = TextEditingController(text: existing?.googleCalendarId ?? '');
+    _parentId = existing != null ? existing.parentId : widget.initialParentId;
+    _selectedColor =
+        existing?.colorHex ?? (realm == AppRealm.life ? '#10B981' : '#3B82F6');
+    _status = existing?.status ?? 'active';
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _weeklyCtrl.dispose();
+    _rateCtrl.dispose();
+    _gcalCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final existing = widget.existing;
+    final realm = existing?.realm ?? widget.provider.dashboardRealm;
+    final palette =
+        realm == AppRealm.life ? RealmPalette.life : RealmPalette.work;
+
+    final Set<String> forbiddenParentIds = existing != null
+        ? DatabaseService.getProjectAndDescendantIds(
+            existing.id, widget.provider.projects)
+        : <String>{};
+
+    final selectableParents = widget.provider.projects
+        .where((p) => !forbiddenParentIds.contains(p.id))
+        .toList();
+
+    return AlertDialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: palette.border),
+      ),
+      title: Row(
+        children: [
+          Icon(
+            existing == null
+                ? Icons.create_new_folder_rounded
+                : Icons.edit_rounded,
+            color: palette.accent,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            existing == null
+                ? (widget.initialParentId != null
+                    ? 'ایجاد زیرپروژه (${realm.labelFa})'
+                    : 'ایجاد پروژه جدید (${realm.labelFa})')
+                : 'ویرایش پروژه: ${existing.name}',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _nameCtrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'نام پروژه یا زیرپروژه',
+                  hintText: 'مثلاً: اپلیکیشن موبایل / خواب شبانه',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              UnifiedProjectSelector(
+                projects: selectableParents,
+                realmFilter: realm,
+                selectedProjectId: _parentId,
+                emptyLabel: 'پروژه ریشه (بدون مادر)',
+                accentColor: palette.accent,
+                onSelected: (pid) => setState(() => _parentId = pid),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _weeklyCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'سهمیه هفتگی (دقیقه)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _rateCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'نرخ ساعتی (۰ = ارث از مادر)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _gcalCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'شناسه تقویم گوگل اختصاصی (اختیاری)',
+                  hintText: 'خالی = ارث‌بری از مادر یا تقویم پیش‌فرض قلمرو',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: _status,
+                decoration: const InputDecoration(
+                  labelText: 'وضعیت پروژه',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                dropdownColor: palette.surfaceElevated,
+                items: const [
+                  DropdownMenuItem(value: 'active', child: Text('فعال')),
+                  DropdownMenuItem(
+                      value: 'suspended', child: Text('معلق (متوقف موقت)')),
+                  DropdownMenuItem(value: 'archived', child: Text('آرشیوشده')),
+                ],
+                onChanged: (val) =>
+                    setState(() => _status = val ?? 'active'),
+              ),
+              const SizedBox(height: 12),
+              const Text('رنگ پروژه:',
+                  style:
+                      TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                children: widget.colorSwatches.map((hex) {
+                  final col = widget.parseHex(hex, palette.accent);
+                  final isSel =
+                      _selectedColor.toUpperCase() == hex.toUpperCase();
+                  return InkWell(
+                    onTap: () => setState(() => _selectedColor = hex),
+                    borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: col,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isSel ? Colors.white : Colors.transparent,
+                          width: 2.5,
+                        ),
+                      ),
+                      child: isSel
+                          ? const Icon(Icons.check,
+                              size: 16, color: Colors.white)
+                          : null,
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('انصراف'),
+        ),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(backgroundColor: palette.accent),
+          icon: const Icon(Icons.save_rounded, size: 16),
+          label: const Text('ذخیره پروژه'),
+          onPressed: () async {
+            final cleanName = _nameCtrl.text.trim();
+            if (cleanName.isEmpty) return;
+
+            final cleanGcal = _gcalCtrl.text.trim();
+            final node = existing != null
+                ? existing.copyWith(
+                    name: cleanName,
+                    parentId: _parentId,
+                    clearParentId: _parentId == null,
+                    colorHex: _selectedColor,
+                    weeklyQuotaMinutes: int.tryParse(_weeklyCtrl.text) ?? 0,
+                    hourlyRate: double.tryParse(_rateCtrl.text) ?? 0.0,
+                    googleCalendarId: cleanGcal,
+                    clearGoogleCalendarId: cleanGcal.isEmpty,
+                    status: _status,
+                  )
+                : ProjectNode(
+                    id: const Uuid().v4(),
+                    realm: realm,
+                    name: cleanName,
+                    parentId: _parentId,
+                    colorHex: _selectedColor,
+                    weeklyQuotaMinutes: int.tryParse(_weeklyCtrl.text) ?? 0,
+                    hourlyRate: double.tryParse(_rateCtrl.text) ?? 0.0,
+                    googleCalendarId: cleanGcal.isEmpty ? null : cleanGcal,
+                    status: _status,
+                  );
+
+            await widget.provider.saveProject(node);
+            if (context.mounted) Navigator.of(context).pop(node);
+          },
+        ),
       ],
     );
   }

@@ -15,6 +15,7 @@ import '../../providers/app_state_provider.dart';
 import '../../services/database_service.dart';
 import '../shared/unified_project_selector.dart';
 import '../shared/work_note_dialog.dart';
+import '../shared/edit_session_note_dialog.dart';
 
 /// دیالوگ ویرایش ممیزی‌دار یک رکورد زمانی (قابل استفاده در تایم‌شیت و تقویم)
 Future<void> showTimeRecordEditDialog(
@@ -26,6 +27,7 @@ Future<void> showTimeRecordEditDialog(
   final editNoteCtrl = TextEditingController(text: record.editNote ?? '');
   AppRealm selectedRealm = record.realm;
   String? selectedProjectId = record.projectId;
+  String? selectedOutcomeId = record.outcomeId;
   DateTime start = record.startTime;
   DateTime end = record.endTime ??
       record.startTime.add(Duration(seconds: record.durationSeconds));
@@ -109,7 +111,51 @@ Future<void> showTimeRecordEditDialog(
                     selectedProjectId: selectedProjectId,
                     accentColor: realmColor,
                     onSelected: (pid) =>
-                        setModalState(() => selectedProjectId = pid),
+                        setModalState(() {
+                          selectedProjectId = pid;
+                          if (selectedOutcomeId != null) {
+                            final oc = provider.getOutcomeById(selectedOutcomeId!);
+                            if (oc != null && pid != null && oc.projectId != pid) {
+                              selectedOutcomeId = null;
+                            }
+                          }
+                        }),
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String?>(
+                    key: ValueKey('$selectedProjectId-$selectedOutcomeId'),
+                    initialValue: (selectedOutcomeId != null &&
+                            provider.outcomes.any((o) =>
+                                o.id == selectedOutcomeId &&
+                                (selectedProjectId == null ||
+                                    o.projectId == selectedProjectId) &&
+                                o.realm == selectedRealm))
+                        ? selectedOutcomeId
+                        : null,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'کار / هدف متصل (انتقال یا اتصال)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('بدون کار اختصاصی (فقط پروژه)'),
+                      ),
+                      ...provider.outcomes
+                          .where((o) =>
+                              (selectedProjectId == null ||
+                                  o.projectId == selectedProjectId) &&
+                              o.realm == selectedRealm)
+                          .map((o) => DropdownMenuItem<String?>(
+                                value: o.id,
+                                child: Text(o.title,
+                                    overflow: TextOverflow.ellipsis),
+                              )),
+                    ],
+                    onChanged: (oid) =>
+                        setModalState(() => selectedOutcomeId = oid),
                   ),
                   const SizedBox(height: 10),
                   Row(
@@ -196,14 +242,21 @@ Future<void> showTimeRecordEditDialog(
                 final cleanTitle = titleCtrl.text.trim();
                 if (cleanTitle.isEmpty) return;
 
+                final effectiveOutcomeId = (selectedOutcomeId != null &&
+                        provider.outcomes.any((o) =>
+                            o.id == selectedOutcomeId &&
+                            (selectedProjectId == null ||
+                                o.projectId == selectedProjectId) &&
+                            o.realm == selectedRealm))
+                    ? selectedOutcomeId
+                    : null;
+
                 await provider.editTimeRecordWithAudit(
                   id: record.id,
                   newTitle: cleanTitle,
                   newRealm: selectedRealm,
-                  newOutcomeId:
-                      selectedRealm == record.realm ? record.outcomeId : null,
-                  clearOutcomeId:
-                      selectedRealm != record.realm || record.outcomeId == null,
+                  newOutcomeId: effectiveOutcomeId,
+                  clearOutcomeId: effectiveOutcomeId == null,
                   newProjectId: selectedProjectId,
                   clearProjectId: selectedProjectId == null,
                   newTagIds: record.tagIds,
@@ -243,6 +296,9 @@ class _ActivityLogTabState extends State<ActivityLogTab>
   AppRealm? _recordRealmFilter; // null = همه ۲۴ ساعت
   String _clockFilter = 'all'; // all | pomodoro | stopwatch | untitled
   String? _selectedProjectId;
+  final Set<String> _selectedProjectIds = {};
+  DateTime? _rangeStart;
+  DateTime? _rangeEnd;
   bool _onlyToday = false;
 
   // فیلترهای یادداشت‌ها
@@ -264,15 +320,48 @@ class _ActivityLogTabState extends State<ActivityLogTab>
     super.dispose();
   }
 
+  int _effectiveDurationSeconds(TimeRecord r) {
+    final DateTime recEnd = r.endTime ?? DateTime.now();
+    if (_rangeStart != null || _rangeEnd != null) {
+      final effectiveStart =
+          (_rangeStart != null && r.startTime.isBefore(_rangeStart!))
+              ? _rangeStart!
+              : r.startTime;
+      final effectiveEnd =
+          (_rangeEnd != null && recEnd.isAfter(_rangeEnd!))
+              ? _rangeEnd!
+              : recEnd;
+      if (!effectiveEnd.isAfter(effectiveStart)) return 0;
+      return effectiveEnd.difference(effectiveStart).inSeconds;
+    }
+    if (r.endTime == null) {
+      return recEnd.difference(r.startTime).inSeconds.clamp(0, 86400 * 7);
+    }
+    return r.durationSeconds;
+  }
+
   List<TimeRecord> _filterRecords(
     List<TimeRecord> list,
     AppStateProvider provider,
   ) {
     final now = DateTime.now();
-    final Set<String>? projFamily = _selectedProjectId != null
-        ? DatabaseService.getProjectAndDescendantIds(
-            _selectedProjectId!, provider.projects)
-        : null;
+    final Set<String>? projFamily;
+    if (_selectedProjectIds.isNotEmpty) {
+      final combined = <String>{};
+      for (final pid in _selectedProjectIds) {
+        combined.addAll(
+          DatabaseService.getProjectAndDescendantIds(pid, provider.projects),
+        );
+      }
+      projFamily = combined;
+    } else if (_selectedProjectId != null) {
+      projFamily = DatabaseService.getProjectAndDescendantIds(
+        _selectedProjectId!,
+        provider.projects,
+      );
+    } else {
+      projFamily = null;
+    }
 
     return list.where((r) {
       if (_recordRealmFilter != null && r.realm != _recordRealmFilter) {
@@ -284,6 +373,9 @@ class _ActivityLogTabState extends State<ActivityLogTab>
             r.startTime.day != now.day) {
           return false;
         }
+      }
+      if (_rangeStart != null || _rangeEnd != null) {
+        if (_effectiveDurationSeconds(r) <= 0) return false;
       }
       if (projFamily != null) {
         if (r.projectId == null || !projFamily.contains(r.projectId)) {
@@ -444,6 +536,269 @@ class _ActivityLogTabState extends State<ActivityLogTab>
     );
   }
 
+  Future<void> _showMultiProjectDialog(
+    BuildContext context,
+    AppStateProvider provider,
+    RealmPalette palette,
+  ) async {
+    final candidates = provider.projects
+        .where((p) =>
+            !p.isArchived &&
+            (_recordRealmFilter == null || p.realm == _recordRealmFilter))
+        .toList();
+    final tempSelected = Set<String>.from(_selectedProjectIds);
+
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: palette.border),
+          ),
+          title: const Text(
+            'انتخاب چند پروژه برای گزارش',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          ),
+          content: SizedBox(
+            width: 360,
+            child: candidates.isEmpty
+                ? const Text(
+                    'هیچ پروژه‌ای یافت نشد.',
+                    style: TextStyle(color: AppColors.textMuted),
+                  )
+                : SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: candidates.map((p) {
+                        final isChecked = tempSelected.contains(p.id);
+                        final breadcrumb =
+                            provider.getProjectBreadcrumbString(p.id);
+                        return CheckboxListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: palette.accent,
+                          title: Text(
+                            p.name,
+                            style: const TextStyle(fontSize: 12.5),
+                          ),
+                          subtitle: p.parentId != null
+                              ? Text(
+                                  breadcrumb,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                )
+                              : null,
+                          value: isChecked,
+                          onChanged: (v) {
+                            setDlgState(() {
+                              if (v == true) {
+                                tempSelected.add(p.id);
+                              } else {
+                                tempSelected.remove(p.id);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => setDlgState(() => tempSelected.clear()),
+              child: const Text('پاک کردن'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('انصراف'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: palette.accent),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('اعمال'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (applied == true && mounted) {
+      setState(() {
+        _selectedProjectIds
+          ..clear()
+          ..addAll(tempSelected);
+        if (_selectedProjectIds.isNotEmpty) {
+          _selectedProjectId = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _showDateTimeRangeDialog(
+    BuildContext context,
+    RealmPalette palette,
+  ) async {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    DateTime tempStart = _rangeStart ?? todayStart;
+    DateTime tempEnd = _rangeEnd ?? now;
+
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: palette.border),
+          ),
+          title: const Text(
+            'فیلتر بازه تاریخ و ساعت',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          ),
+          content: SizedBox(
+            width: 380,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    ActionChip(
+                      label: const Text('امروز', style: TextStyle(fontSize: 11)),
+                      onPressed: () => setDlgState(() {
+                        tempStart = todayStart;
+                        tempEnd = todayStart.add(const Duration(days: 1));
+                      }),
+                    ),
+                    ActionChip(
+                      label: const Text('۷ روز اخیر',
+                          style: TextStyle(fontSize: 11)),
+                      onPressed: () => setDlgState(() {
+                        tempStart = todayStart.subtract(const Duration(days: 6));
+                        tempEnd = todayStart.add(const Duration(days: 1));
+                      }),
+                    ),
+                    ActionChip(
+                      label: const Text('۳۰ روز اخیر',
+                          style: TextStyle(fontSize: 11)),
+                      onPressed: () => setDlgState(() {
+                        tempStart = todayStart.subtract(const Duration(days: 29));
+                        tempEnd = todayStart.add(const Duration(days: 1));
+                      }),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.login_rounded, color: palette.accent),
+                  title: Text(
+                    'شروع: ${JalaliDate.fromDateTime(tempStart).formatShort()} • ${DateFormat('HH:mm').format(tempStart)}',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                  onTap: () async {
+                    final d = await showDatePicker(
+                      context: ctx,
+                      initialDate: tempStart,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2035),
+                    );
+                    if (d != null && ctx.mounted) {
+                      final t = await showTimePicker(
+                        context: ctx,
+                        initialTime: TimeOfDay.fromDateTime(tempStart),
+                      );
+                      setDlgState(() {
+                        tempStart = DateTime(
+                          d.year,
+                          d.month,
+                          d.day,
+                          t?.hour ?? tempStart.hour,
+                          t?.minute ?? tempStart.minute,
+                        );
+                      });
+                    }
+                  },
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.logout_rounded, color: palette.accent),
+                  title: Text(
+                    'پایان: ${JalaliDate.fromDateTime(tempEnd).formatShort()} • ${DateFormat('HH:mm').format(tempEnd)}',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                  onTap: () async {
+                    final d = await showDatePicker(
+                      context: ctx,
+                      initialDate: tempEnd,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2035),
+                    );
+                    if (d != null && ctx.mounted) {
+                      final t = await showTimePicker(
+                        context: ctx,
+                        initialTime: TimeOfDay.fromDateTime(tempEnd),
+                      );
+                      setDlgState(() {
+                        tempEnd = DateTime(
+                          d.year,
+                          d.month,
+                          d.day,
+                          t?.hour ?? tempEnd.hour,
+                          t?.minute ?? tempEnd.minute,
+                        );
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                if (mounted) {
+                  setState(() {
+                    _rangeStart = null;
+                    _rangeEnd = null;
+                  });
+                }
+                Navigator.of(ctx).pop(false);
+              },
+              child: const Text('حذف بازه'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('انصراف'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: palette.accent),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('اعمال'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (applied == true && mounted) {
+      setState(() {
+        _rangeStart = tempStart;
+        _rangeEnd = tempEnd;
+        _onlyToday = false;
+      });
+    }
+  }
+
   // ==================== ۱. نمای گزارش کارکرد و تایم‌شیت ====================
 
   Widget _buildActivityLogsView(
@@ -451,8 +806,8 @@ class _ActivityLogTabState extends State<ActivityLogTab>
     RealmPalette palette,
   ) {
     final filtered = _filterRecords(provider.timeRecords, provider);
-    final totalSec =
-        filtered.fold<int>(0, (sum, item) => sum + item.durationSeconds);
+    final totalSec = filtered.fold<int>(
+        0, (sum, item) => sum + _effectiveDurationSeconds(item));
 
     return Padding(
       padding: const EdgeInsets.all(14),
@@ -527,9 +882,46 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                           selectedProjectId: _selectedProjectId,
                           emptyLabel: 'فیلتر پروژه: همه',
                           accentColor: palette.accent,
-                          onSelected: (pid) =>
-                              setState(() => _selectedProjectId = pid),
+                          onSelected: (pid) => setState(() {
+                            _selectedProjectId = pid;
+                            if (pid != null) _selectedProjectIds.clear();
+                          }),
                         ),
+                      ),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor: _selectedProjectIds.isNotEmpty
+                              ? palette.accent
+                              : null,
+                        ),
+                        icon: const Icon(Icons.checklist_rtl_rounded, size: 15),
+                        label: Text(
+                          _selectedProjectIds.isEmpty
+                              ? 'انتخاب چند پروژه'
+                              : 'انتخاب چند پروژه (${_selectedProjectIds.length})',
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                        onPressed: () =>
+                            _showMultiProjectDialog(context, provider, palette),
+                      ),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor:
+                              (_rangeStart != null || _rangeEnd != null)
+                                  ? palette.accent
+                                  : null,
+                        ),
+                        icon: const Icon(Icons.date_range_rounded, size: 15),
+                        label: Text(
+                          (_rangeStart == null && _rangeEnd == null)
+                              ? 'بازه زمانی'
+                              : 'بازه زمانی (فعال)',
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                        onPressed: () =>
+                            _showDateTimeRangeDialog(context, palette),
                       ),
                     ],
                   ),
@@ -1036,6 +1428,13 @@ class _ActivityLogTabState extends State<ActivityLogTab>
                                           fontSize: 11,
                                           color: AppColors.textSecondary,
                                         ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.drive_file_move_outlined,
+                                            size: 18),
+                                        tooltip: 'ویرایش و انتقال یادداشت به پروژه یا کار دیگر',
+                                        onPressed: () =>
+                                            EditSessionNoteDialog.show(context, note),
                                       ),
                                       IconButton(
                                         icon: const Icon(Icons.delete_outline,

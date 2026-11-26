@@ -13,6 +13,7 @@ class ProjectNode {
   final double hourlyRate;
   final String? googleCalendarId;
   final DateTime createdAt;
+  final DateTime updatedAt;
 
   ProjectNode({
     required this.id,
@@ -27,8 +28,10 @@ class ProjectNode {
     this.hourlyRate = 0.0,
     this.googleCalendarId,
     DateTime? createdAt,
+    DateTime? updatedAt,
   })  : colorHex = colorHex ?? (realm == AppRealm.life ? '#10B981' : '#3B82F6'),
-        createdAt = createdAt ?? DateTime.now();
+        createdAt = createdAt ?? DateTime.now(),
+        updatedAt = updatedAt ?? createdAt ?? DateTime.now();
 
   bool get isActive => status == 'active';
   bool get isSuspended => status == 'suspended';
@@ -57,11 +60,16 @@ class ProjectNode {
       'hourly_rate': hourlyRate,
       'google_calendar_id': googleCalendarId,
       'created_at': createdAt.toIso8601String(),
+      'updated_at': updatedAt.toIso8601String(),
     };
   }
 
   factory ProjectNode.fromMap(Map<String, dynamic> map) {
     final realm = AppRealmX.fromDb(map['realm'] as String?);
+    final created = DateTime.tryParse(map['created_at'] as String? ?? '') ??
+        DateTime.now();
+    final updated = DateTime.tryParse(map['updated_at'] as String? ?? '') ??
+        created;
     return ProjectNode(
       id: map['id'] as String,
       realm: realm,
@@ -76,8 +84,8 @@ class ProjectNode {
       monthlyQuotaMinutes: map['monthly_quota_minutes'] as int? ?? 0,
       hourlyRate: (map['hourly_rate'] as num? ?? 0.0).toDouble(),
       googleCalendarId: map['google_calendar_id'] as String?,
-      createdAt: DateTime.tryParse(map['created_at'] as String? ?? '') ??
-          DateTime.now(),
+      createdAt: created,
+      updatedAt: updated,
     );
   }
 
@@ -96,6 +104,7 @@ class ProjectNode {
     String? googleCalendarId,
     bool clearGoogleCalendarId = false,
     DateTime? createdAt,
+    DateTime? updatedAt,
   }) {
     return ProjectNode(
       id: id ?? this.id,
@@ -112,6 +121,7 @@ class ProjectNode {
           ? null
           : (googleCalendarId ?? this.googleCalendarId),
       createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? DateTime.now(),
     );
   }
 }

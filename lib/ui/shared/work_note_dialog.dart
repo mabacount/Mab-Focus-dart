@@ -141,6 +141,22 @@ class _WorkNoteDialogState extends State<WorkNoteDialog> {
   final List<String> _attachedImagePaths = [];
   SessionNoteType _noteType = SessionNoteType.report;
   bool _isSaving = false;
+  String? _selectedProjectId;
+  String? _selectedOutcomeId;
+  bool _initializedLinks = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initializedLinks) {
+      final provider = context.read<AppStateProvider>();
+      final active = provider.activeRecord;
+      final outcome = provider.activeOutcome;
+      _selectedProjectId = active?.projectId ?? outcome?.projectId;
+      _selectedOutcomeId = active?.outcomeId ?? outcome?.id;
+      _initializedLinks = true;
+    }
+  }
 
   @override
   void dispose() {
@@ -281,15 +297,22 @@ class _WorkNoteDialogState extends State<WorkNoteDialog> {
     try {
       final provider = context.read<AppStateProvider>();
       final active = provider.activeRecord;
+      final outcome = provider.activeOutcome;
       final now = DateTime.now();
+
+      final selectedProj = provider.getProjectById(_selectedProjectId);
+      final noteRealm = selectedProj?.realm ?? active?.realm ?? provider.pomodoroState.realm;
+
+      final isStillLinkedToActive = (_selectedOutcomeId == (active?.outcomeId ?? outcome?.id) &&
+          _selectedProjectId == (active?.projectId ?? outcome?.projectId));
 
       final note = SessionNote(
         id: const Uuid().v4(),
-        realm: active?.realm ?? provider.pomodoroState.realm,
+        realm: noteRealm,
         noteType: _noteType,
-        timeRecordId: active?.id,
-        outcomeId: active?.outcomeId,
-        projectId: active?.projectId,
+        timeRecordId: isStillLinkedToActive ? active?.id : null,
+        outcomeId: _selectedOutcomeId,
+        projectId: _selectedProjectId,
         content: text,
         imagePaths: List.from(_attachedImagePaths),
         createdAt: now,
@@ -329,7 +352,6 @@ class _WorkNoteDialogState extends State<WorkNoteDialog> {
     final realmColor = activeRealm == AppRealm.life
         ? AppColors.lifeGreen
         : AppColors.workBlue;
-    final project = provider.getProjectById(active?.projectId);
 
     final now = DateTime.now();
     final timeStr =
@@ -422,52 +444,219 @@ class _WorkNoteDialogState extends State<WorkNoteDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // کپسول کانتکست سه‌گانه
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceElevated,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.link_rounded, size: 14, color: realmColor),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            displayTitle,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                  // انتخابگر پروژه و کار متصل به یادداشت (پیش‌فرض: کار جاری اما قابل تغییر در لحظه)
+                  Builder(
+                    builder: (context) {
+                      final availableOutcomes = _selectedProjectId != null
+                          ? provider.outcomes
+                              .where((o) => o.projectId == _selectedProjectId)
+                              .toList()
+                          : provider.outcomes;
+                      final selectedProj =
+                          provider.getProjectById(_selectedProjectId);
+                      final selectedOutcome = _selectedOutcomeId != null
+                          ? provider.getOutcomeById(_selectedOutcomeId!)
+                          : null;
+                      final activeDefaultProjId =
+                          active?.projectId ?? outcome?.projectId;
+                      final activeDefaultOutId =
+                          active?.outcomeId ?? outcome?.id;
+                      final bool isModifiedFromDefault = (_selectedProjectId !=
+                              activeDefaultProjId ||
+                          _selectedOutcomeId != activeDefaultOutId);
+
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceElevated,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: realmColor.withAlpha(90)),
                         ),
-                        if (project != null) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: _parseHex(project.colorHex).withAlpha(40),
-                              borderRadius: BorderRadius.circular(4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.link_rounded,
+                                    size: 14, color: realmColor),
+                                const SizedBox(width: 6),
+                                const Text(
+                                  'لینک یادداشت به پروژه و کار:',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                                const Spacer(),
+                                if (isModifiedFromDefault)
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _selectedProjectId = activeDefaultProjId;
+                                        _selectedOutcomeId = activeDefaultOutId;
+                                      });
+                                    },
+                                    child: const Text(
+                                      'بازنشانی به کار جاری',
+                                      style: TextStyle(
+                                          fontSize: 10.5,
+                                          color: Colors.orangeAccent),
+                                    ),
+                                  ),
+                              ],
                             ),
-                            child: Text(
-                              project.name,
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                color: _parseHex(project.colorHex),
-                                fontWeight: FontWeight.bold,
-                              ),
+                            const SizedBox(height: 6),
+                            // ردیف ۱: انتخاب پروژه
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.folder_outlined,
+                                  size: 13,
+                                  color: selectedProj != null
+                                      ? _parseHex(selectedProj.colorHex)
+                                      : AppColors.textMuted,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: DropdownButtonHideUnderline(
+                                    child: DropdownButton<String?>(
+                                      value: provider.projects.any(
+                                              (p) => p.id == _selectedProjectId)
+                                          ? _selectedProjectId
+                                          : null,
+                                      isDense: true,
+                                      isExpanded: true,
+                                      dropdownColor: AppColors.surface,
+                                      hint: const Text('بدون پروژه (عمومی)',
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: AppColors.textMuted)),
+                                      style: const TextStyle(
+                                          fontSize: 11.5,
+                                          color: AppColors.textPrimary),
+                                      items: [
+                                        const DropdownMenuItem<String?>(
+                                          value: null,
+                                          child: Text('بدون پروژه (عمومی)',
+                                              style: TextStyle(fontSize: 11.5)),
+                                        ),
+                                        ...provider.projects
+                                            .where((p) => !p.isArchived)
+                                            .map((p) => DropdownMenuItem<String?>(
+                                                  value: p.id,
+                                                  child: Row(
+                                                    children: [
+                                                      Container(
+                                                        width: 8,
+                                                        height: 8,
+                                                        decoration: BoxDecoration(
+                                                          color: _parseHex(
+                                                              p.colorHex),
+                                                          shape: BoxShape.circle,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Expanded(
+                                                        child: Text(
+                                                          p.name,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style: const TextStyle(
+                                                              fontSize: 11.5),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                )),
+                                      ],
+                                      onChanged: (newPid) {
+                                        setState(() {
+                                          _selectedProjectId = newPid;
+                                          if (_selectedOutcomeId != null) {
+                                            final currOut = provider.getOutcomeById(
+                                                _selectedOutcomeId!);
+                                            if (currOut != null &&
+                                                currOut.projectId != newPid) {
+                                              _selectedOutcomeId = null;
+                                            }
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                        ],
-                      ],
-                    ),
+                            const Divider(height: 10, color: AppColors.border),
+                            // ردیف ۲: انتخاب کار / هدف
+                            Row(
+                              children: [
+                                Icon(Icons.check_circle_outline_rounded,
+                                    size: 13, color: realmColor),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: DropdownButtonHideUnderline(
+                                    child: DropdownButton<String?>(
+                                      value: availableOutcomes.any(
+                                              (o) => o.id == _selectedOutcomeId)
+                                          ? _selectedOutcomeId
+                                          : null,
+                                      isDense: true,
+                                      isExpanded: true,
+                                      dropdownColor: AppColors.surface,
+                                      hint: Text(
+                                        selectedOutcome?.title ?? displayTitle,
+                                        style: const TextStyle(
+                                            fontSize: 11.5,
+                                            color: AppColors.textPrimary),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      style: const TextStyle(
+                                          fontSize: 11.5,
+                                          color: AppColors.textPrimary),
+                                      items: [
+                                        const DropdownMenuItem<String?>(
+                                          value: null,
+                                          child: Text(
+                                              'بدون کار مشخص (یادداشت کلی)',
+                                              style: TextStyle(fontSize: 11.5)),
+                                        ),
+                                        ...availableOutcomes
+                                            .map((o) => DropdownMenuItem<String?>(
+                                                  value: o.id,
+                                                  child: Text(
+                                                    o.title,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                        fontSize: 11.5),
+                                                  ),
+                                                )),
+                                      ],
+                                      onChanged: (newOid) {
+                                        setState(() {
+                                          _selectedOutcomeId = newOid;
+                                          if (newOid != null) {
+                                            final out =
+                                                provider.getOutcomeById(newOid);
+                                            if (out != null &&
+                                                out.projectId != null) {
+                                              _selectedProjectId = out.projectId;
+                                            }
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(height: 10),
 

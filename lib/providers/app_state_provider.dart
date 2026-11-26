@@ -17,7 +17,9 @@ import '../models/time_record.dart';
 import '../services/database_service.dart';
 import '../services/excel_export_service.dart';
 import '../services/gcal_sync_service.dart';
+import '../services/ecosystem_bridge_service.dart';
 import '../services/music_player_service.dart';
+import '../services/nature_ambience_service.dart';
 import '../services/sound_service.dart';
 import '../services/txt_logger_service.dart';
 
@@ -45,7 +47,9 @@ class AppStateProvider extends ChangeNotifier {
     final completer = Completer<T>();
     _mutationQueue = _mutationQueue.then((_) async {
       try {
+        EcosystemBridgeService.instance.notifyInternalWrite();
         final result = await action();
+        EcosystemBridgeService.instance.notifyInternalWrite();
         if (!completer.isCompleted) {
           completer.complete(result);
         }
@@ -56,6 +60,17 @@ class AppStateProvider extends ChangeNotifier {
       }
     });
     return completer.future;
+  }
+
+  /// تخلیه امن صف عملیات در حال انتظار پیش از بستن پنجره
+  Future<void> flushPendingMutations() async {
+    while (true) {
+      final pending = _mutationQueue;
+      try {
+        await pending;
+      } catch (_) {}
+      if (identical(_mutationQueue, pending)) break;
+    }
   }
 
   List<ProjectNode> _projects = [];
@@ -95,6 +110,9 @@ class AppStateProvider extends ChangeNotifier {
   String? _lastErgonomicNudgeMessage;
   bool _isPinned = true;
   bool _isGoldenScheduledTaskActive = false;
+  bool _isLifeNatureSlideshowEnabled = true;
+  bool _isNatureSlideshowDismissed = false;
+  WindowPosture? _preSlideshowPosture;
 
   // اسنپ‌شات آخرین فعالیت کاری برای بازگشت خودکار پس از استراحت
   String? _previousWorkOutcomeId;
@@ -123,6 +141,11 @@ class AppStateProvider extends ChangeNotifier {
   TimeRecord? get recoveredOpenRecord => _recoveredOpenRecord;
   int get activeRecordElapsedSeconds => _activeRecordElapsedSeconds;
   bool get isGoldenScheduledTaskActive => _isGoldenScheduledTaskActive;
+  bool get isLifeNatureSlideshowEnabled => _isLifeNatureSlideshowEnabled;
+  bool get shouldShowNatureSlideshow =>
+      _isLifeNatureSlideshowEnabled &&
+      _pomodoroState.isLife &&
+      !_isNatureSlideshowDismissed;
 
   OutcomeItem? get activeOutcome => _activeRecord?.outcomeId != null
       ? getOutcomeById(_activeRecord!.outcomeId!)
@@ -494,10 +517,20 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<void> initialize() async {
     await _loadSettings();
+    if (!isTestMode) {
+      await DatabaseService.instance.reconcileWithEcosystemCore();
+    }
     await refreshAllData();
     await _recoverOpenSessionIfAny();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
+      await EcosystemBridgeService.instance.startDatabaseWatcher(
+        onExternalChange: () async {
+          await DatabaseService.instance.reconcileWithEcosystemCore();
+          await refreshAllData();
+        },
+      );
     }
   }
 
@@ -587,8 +620,14 @@ class AppStateProvider extends ChangeNotifier {
         ? lifeLogRaw
         : (legacyBreakRaw ?? '');
 
+    final natureSlideshowStr =
+        await db.getSetting(AppDefaults.settingKeyLifeNatureSlideshowEnabled);
+    _isLifeNatureSlideshowEnabled =
+        natureSlideshowStr == null || natureSlideshowStr == '1';
+
     if (!isTestMode) {
       MusicPlayerService.instance.setPlayDuringBreaks(musicBreakStr == '1');
+      await MusicPlayerService.instance.loadPlaylists();
       try {
         _txtLogPath = await TxtLoggerService.instance.getEffectiveLogFilePath();
       } catch (_) {}
@@ -686,6 +725,16 @@ class AppStateProvider extends ChangeNotifier {
       activeOutcomeId: newest.outcomeId,
       clearActiveOutcome: newest.outcomeId == null,
     );
+
+    if (newest.isLife && _isLifeNatureSlideshowEnabled) {
+      _preSlideshowPosture ??= _pomodoroState.windowPosture;
+      _isNatureSlideshowDismissed = false;
+      if (!isTestMode) {
+        try {
+          unawaited(NatureAmbienceService.instance.play());
+        } catch (_) {}
+      }
+    }
 
     _ensureTickerRunning();
     notifyListeners();
@@ -1131,6 +1180,7 @@ class AppStateProvider extends ChangeNotifier {
         elapsedSeconds: totalPhaseElapsed,
       );
       notifyListeners();
+      _syncEcosystemBridgeState();
       return;
     }
 
@@ -1178,6 +1228,7 @@ class AppStateProvider extends ChangeNotifier {
     );
 
     notifyListeners();
+    _syncEcosystemBridgeState();
   }
 
   void clearErgonomicNudge() {
@@ -1185,22 +1236,188 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// همگام‌سازی وضعیت زنده پومودورو در فایل پل اکوسیستم (mab_ecosystem_sync.json)
+  Future<void> _syncEcosystemBridgeState({bool force = false}) async {
+    if (isTestMode) return;
+    try {
+      final isRunning = _pomodoroState.status == TimerStatus.running ||
+          _pomodoroState.status == TimerStatus.overtime;
+      final active = _activeRecord;
+      final project = active?.projectId != null
+          ? getProjectById(active!.projectId)
+          : null;
+      final outcome = active?.outcomeId != null
+          ? getOutcomeById(active!.outcomeId!)
+          : null;
+
+      final title = outcome?.title ??
+          ((active != null && !active.isUntitledDraft)
+              ? active.titleSnapshot
+              : (_pomodoroState.isLife ? 'استراحت / زندگی' : 'کار تمرکزی'));
+
+      final remaining = _pomodoroState.targetSeconds > 0
+          ? math.max(0, _pomodoroState.targetSeconds - _pomodoroState.elapsedSeconds)
+          : _pomodoroState.elapsedSeconds;
+
+      await EcosystemBridgeService.instance.syncPomodoroState(
+        isRunning: isRunning,
+        projectId: active?.projectId,
+        projectName: project?.name,
+        taskTitle: isRunning ? title : null,
+        remainingSeconds: isRunning ? remaining : 0,
+        realm: _pomodoroState.realm.name,
+        status: _pomodoroState.status.name,
+        elapsedSeconds: _pomodoroState.elapsedSeconds,
+        targetSeconds: _pomodoroState.targetSeconds,
+        breakBankSeconds: _pomodoroState.earnedShortBreakSeconds,
+        force: force,
+      );
+    } catch (_) {}
+  }
+
   // ==================== کنترل دوگانه کار و زندگی (متد یکپارچه switchRealm - چالش ۴) ====================
 
-  Future<void> togglePin() async {
-    _isPinned = !_isPinned;
-    await DatabaseService.instance.setSetting(
-      AppDefaults.settingKeyWidgetPinned,
-      _isPinned ? '1' : '0',
-    );
-    if (!isTestMode) {
-      await PlatformHelper.setPinned(_isPinned);
-    }
-    notifyListeners();
+  Future<void> togglePin() {
+    return _synchronized(() async {
+      _isPinned = !_isPinned;
+      await DatabaseService.instance.setSetting(
+        AppDefaults.settingKeyWidgetPinned,
+        _isPinned ? '1' : '0',
+      );
+      if (!isTestMode) {
+        await PlatformHelper.setPinned(_isPinned);
+      }
+      notifyListeners();
+    });
   }
 
   Future<void> togglePlayPause() async {
-    await toggleWorkLife();
+    await togglePlayStop();
+  }
+
+  /// توقف کامل تایمر (نه کار و نه زندگی ثبت نشود)
+  Future<void> stopTimer() {
+    return _synchronized(() async {
+      _ticker?.cancel();
+      // بستن رکورد فعال در صورت وجود بدون شروع خودکار برش بعدی
+      await _closeActiveRecordAndUpdateBank();
+
+      // بستن هرگونه رکورد بازِ جا‌مانده در دیتابیس برای جلوگیری از تجمیع ناخواسته در اجرای بعدی
+      final staleOpenRows = await DatabaseService.instance.getOpenTimeRecords();
+      if (staleOpenRows.isNotEmpty) {
+        final now = DateTime.now();
+        for (final orphan in staleOpenRows) {
+          final DateTime safeEnd = now.isAfter(orphan.startTime)
+              ? now
+              : orphan.startTime.add(const Duration(seconds: 1));
+          final int dur =
+              math.max(1, safeEnd.difference(orphan.startTime).inSeconds);
+          await DatabaseService.instance.updateTimeRecord(
+            orphan.copyWith(
+              endTime: safeEnd,
+              durationSeconds: dur,
+              earnedBreakSeconds: orphan.isWork ? (dur ~/ _breakRatio) : 0,
+            ),
+          );
+        }
+      }
+
+      _phaseStartedAt = null;
+      _accumulatedPhaseSeconds = 0;
+      _lastErgonomicNudgeMessage = null;
+      _activeRecord = null;
+      _recoveredOpenRecord = null;
+      _recordSliceStartedAt = null;
+      _accumulatedRecordSeconds = 0;
+      _activeRecordElapsedSeconds = 0;
+
+      _previousWorkOutcomeId = null;
+      _previousWorkTitle = null;
+      _previousWorkProjectId = null;
+      _previousWorkTagIds = [];
+      _previousWorkWasGolden = false;
+      _isGoldenScheduledTaskActive = false;
+
+      final bool wasSlideshow =
+          shouldShowNatureSlideshow || _preSlideshowPosture != null;
+      _isNatureSlideshowDismissed = true;
+      final WindowPosture? restorePosture = _preSlideshowPosture;
+      _preSlideshowPosture = null;
+
+      _pomodoroState = _pomodoroState.copyWith(
+        status: TimerStatus.idle,
+        elapsedSeconds: 0,
+        targetSeconds: _pomodoroState.isStopwatch
+            ? 0
+            : (_pomodoroState.isWork
+                ? _focusDurationMinutes * 60
+                : _previewLifeBreakTarget()),
+        overtimeSeconds: 0,
+        lastNudgeAtOvertimeSeconds: 0,
+        cycleWorkSeconds: _cycleWorkSeconds,
+        earnedShortBreakSeconds: _earnedShortBreakSeconds,
+        breakDebtSeconds: _breakDebtSeconds,
+        isInLongBreak: _isInLongBreak,
+        clearActiveRecord: true,
+        clearActiveOutcome: true,
+        windowPosture: wasSlideshow
+            ? (restorePosture ?? _pomodoroState.windowPosture)
+            : null,
+      );
+
+      await _persistFlowmodoroState();
+      await refreshAllData();
+      if (!isTestMode) {
+        if (wasSlideshow || _pomodoroState.isLife) {
+          await NatureAmbienceService.instance.stop();
+        }
+        if (wasSlideshow) {
+          await PlatformHelper.exitLifeSlideshowMode(
+            restorePosture ?? _pomodoroState.windowPosture,
+          );
+        }
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
+  }
+
+  /// شروع مجدد تایمر از حالت متوقف
+  Future<void> startTimer({AppRealm? targetRealm}) {
+    return _synchronized(() async {
+      if (_pomodoroState.status == TimerStatus.running ||
+          _pomodoroState.status == TimerStatus.overtime) {
+        return;
+      }
+      final realm = targetRealm ?? _pomodoroState.realm;
+      final now = DateTime.now();
+      _phaseStartedAt = now;
+      _accumulatedPhaseSeconds = 0;
+
+      await _startNewContinuousSliceAt(
+        startTime: now,
+        targetRealm: realm,
+      );
+      _pomodoroState = _pomodoroState.copyWith(
+        status: TimerStatus.running,
+      );
+      _ensureTickerRunning();
+      await _persistFlowmodoroState();
+      await refreshAllData();
+      if (!isTestMode) {
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
+  }
+
+  /// جابجایی بین حالت اجرا و توقف کامل تایمر
+  Future<void> togglePlayStop() async {
+    if (_pomodoroState.status == TimerStatus.running ||
+        _pomodoroState.status == TimerStatus.overtime) {
+      await stopTimer();
+    } else {
+      await startTimer();
+    }
   }
 
   Future<void> toggleWorkLife() async {
@@ -1479,11 +1696,24 @@ class AppStateProvider extends ChangeNotifier {
     await _persistFlowmodoroState();
     if (!isTestMode) {
       MusicPlayerService.instance.onRealmChanged(targetRealm);
+      if (targetRealm == AppRealm.life && _isLifeNatureSlideshowEnabled) {
+        _isNatureSlideshowDismissed = false;
+        _preSlideshowPosture = _pomodoroState.windowPosture;
+        await NatureAmbienceService.instance.play();
+        await PlatformHelper.enterLifeSlideshowMode();
+      } else {
+        await NatureAmbienceService.instance.stop();
+        if (_preSlideshowPosture != null) {
+          await PlatformHelper.exitLifeSlideshowMode(_preSlideshowPosture!);
+          _preSlideshowPosture = null;
+        }
+      }
     }
     _ensureTickerRunning();
     await refreshAllData();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
     }
   }
 
@@ -1575,11 +1805,24 @@ class AppStateProvider extends ChangeNotifier {
     await _persistFlowmodoroState();
     if (!isTestMode) {
       MusicPlayerService.instance.onRealmChanged(targetRealm);
+      if (targetRealm == AppRealm.life && _isLifeNatureSlideshowEnabled) {
+        _isNatureSlideshowDismissed = false;
+        _preSlideshowPosture = _pomodoroState.windowPosture;
+        await NatureAmbienceService.instance.play();
+        await PlatformHelper.enterLifeSlideshowMode();
+      } else {
+        await NatureAmbienceService.instance.stop();
+        if (_preSlideshowPosture != null) {
+          await PlatformHelper.exitLifeSlideshowMode(_preSlideshowPosture!);
+          _preSlideshowPosture = null;
+        }
+      }
     }
     _ensureTickerRunning();
     await refreshAllData();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
     }
   }
 
@@ -1634,6 +1877,7 @@ class AppStateProvider extends ChangeNotifier {
       }
       if (!isTestMode) {
         await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
         unawaited(
             GCalSyncService.instance.syncTimeRecord(updated, projects: _projects));
       }
@@ -1748,17 +1992,123 @@ class AppStateProvider extends ChangeNotifier {
         ));
   }
 
+  /// شروع یا بازگشت به یک کار تاریخی (TimeRecord بدون OutcomeItem یا با OutcomeItem)
+  Future<void> startOrSwitchToHistoricalRecord(
+    TimeRecord record, {
+    List<String>? tagIds,
+  }) {
+    return _synchronized(() async {
+      if (record.outcomeId != null) {
+        final matched = getOutcomeById(record.outcomeId!);
+        if (matched != null) {
+          await _startOrSwitchToOutcomeUnlocked(
+            matched,
+            tagIds: tagIds ?? record.tagIds,
+          );
+          return;
+        }
+      }
+
+      final effectiveTags = tagIds ?? record.tagIds;
+      if (_activeRecord == null ||
+          _activeRecord!.realm != record.realm ||
+          _pomodoroState.status == TimerStatus.idle) {
+        await _switchRealmUnlocked(
+          record.realm,
+          title: record.titleSnapshot,
+          projectId: record.projectId,
+          tagIds: effectiveTags,
+        );
+        return;
+      }
+
+      final now = DateTime.now();
+      final bool stayingInLife = record.realm == AppRealm.life;
+      final DateTime prevResetAt = _lastCycleResetAt;
+      await _closeActiveRecordAndUpdateBank(
+        endTime: now,
+        preserveOngoingBreakIfWithinLife: stayingInLife,
+      );
+
+      int nextTargetSeconds = _pomodoroState.targetSeconds;
+      TimerStatus nextStatus = _pomodoroState.status;
+      int nextOvertime = _pomodoroState.overtimeSeconds;
+      int nextElapsed = _pomodoroState.elapsedSeconds;
+
+      if (stayingInLife && _pomodoroState.isPomodoro) {
+        if (_lastCycleResetAt != prevResetAt) {
+          nextTargetSeconds = _enterLifeBreakTarget();
+          _phaseStartedAt = now;
+          _accumulatedPhaseSeconds = 0;
+          nextElapsed = 0;
+          nextOvertime = 0;
+          nextStatus = TimerStatus.running;
+        } else if (_pomodoroState.targetSeconds > 0) {
+          _currentBreakTargetSeconds = _pomodoroState.targetSeconds;
+        }
+      }
+
+      final newRecord = TimeRecord(
+        id: _uuid.v4(),
+        realm: record.realm,
+        clockMode: _pomodoroState.clockType,
+        outcomeId: null,
+        projectId: record.projectId,
+        titleSnapshot: record.titleSnapshot,
+        isUntitledDraft: false,
+        tagIds: effectiveTags,
+        startTime: now,
+      );
+
+      await DatabaseService.instance.insertTimeRecord(newRecord);
+      _activeRecord = newRecord;
+      _recordSliceStartedAt = now;
+      _accumulatedRecordSeconds = 0;
+      _activeRecordElapsedSeconds = 0;
+      _isGoldenScheduledTaskActive = false;
+
+      _pomodoroState = _pomodoroState.copyWith(
+        status: nextStatus,
+        elapsedSeconds: nextElapsed,
+        targetSeconds: nextTargetSeconds,
+        overtimeSeconds: nextOvertime,
+        cycleWorkSeconds: _cycleWorkSeconds,
+        earnedShortBreakSeconds: _earnedShortBreakSeconds,
+        breakDebtSeconds: _breakDebtSeconds,
+        isInLongBreak: _isInLongBreak,
+        activeRecordId: newRecord.id,
+        clearActiveOutcome: true,
+      );
+
+      await _persistFlowmodoroState();
+      _ensureTickerRunning();
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
+  }
+
   Future<void> _startOrSwitchToOutcomeUnlocked(
     OutcomeItem outcome, {
+    String? projectId,
     List<String>? tagIds,
     DateTime? atTime,
   }) async {
+    OutcomeItem effectiveOutcome = outcome;
+    if (outcome.isCompleted) {
+      await DatabaseService.instance.reopenOutcome(outcome.id);
+      effectiveOutcome = outcome.copyWith(isCompleted: false, clearCompletedAt: true);
+    }
+
     if (_activeRecord == null ||
-        _activeRecord!.realm != outcome.realm ||
+        _activeRecord!.realm != effectiveOutcome.realm ||
         _pomodoroState.status == TimerStatus.idle) {
       await _switchRealmUnlocked(
-        outcome.realm,
-        outcome: outcome,
+        effectiveOutcome.realm,
+        outcome: effectiveOutcome,
+        projectId: projectId ?? effectiveOutcome.projectId,
         tagIds: tagIds,
         atTime: atTime,
       );
@@ -1797,7 +2147,7 @@ class AppStateProvider extends ChangeNotifier {
       realm: outcome.realm,
       clockMode: _pomodoroState.clockType,
       outcomeId: outcome.id,
-      projectId: outcome.projectId, // قانون وراثت پروژه
+      projectId: outcome.projectId ?? projectId, // قانون وراثت پروژه
       titleSnapshot: outcome.title,
       isUntitledDraft: false,
       tagIds: tagIds ?? const [],
@@ -1829,6 +2179,7 @@ class AppStateProvider extends ChangeNotifier {
     await refreshAllData();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
     }
   }
 
@@ -1978,6 +2329,7 @@ class AppStateProvider extends ChangeNotifier {
     await refreshAllData();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
     }
   }
 
@@ -1989,7 +2341,11 @@ class AppStateProvider extends ChangeNotifier {
   }) {
     return _synchronized(() async {
       if (outcome != null) {
-        await _startOrSwitchToOutcomeUnlocked(outcome, tagIds: tagIds);
+        await _startOrSwitchToOutcomeUnlocked(
+          outcome,
+          projectId: projectId,
+          tagIds: tagIds,
+        );
         return;
       }
 
@@ -2067,92 +2423,199 @@ class AppStateProvider extends ChangeNotifier {
       await refreshAllData();
       if (!isTestMode) {
         await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
       }
-    });
-  }
-
-  Future<void> stopAndResetSession() {
-    return _synchronized(() async {
-      _ticker?.cancel();
-      await _closeActiveRecordAndUpdateBank();
-      _phaseStartedAt = null;
-      _accumulatedPhaseSeconds = 0;
-      _lastErgonomicNudgeMessage = null;
-
-      _pomodoroState = PomodoroState(
-        realm: _pomodoroState.realm,
-        clockType: _pomodoroState.clockType,
-        status: TimerStatus.idle,
-        elapsedSeconds: 0,
-        targetSeconds: _pomodoroState.isStopwatch
-            ? 0
-            : (_focusDurationMinutes * 60),
-        cycleWorkSeconds: _cycleWorkSeconds,
-        earnedShortBreakSeconds: _earnedShortBreakSeconds,
-        breakDebtSeconds: _breakDebtSeconds,
-        cycleWorkTargetSeconds: _cycleWorkTargetMinutes * 60,
-        isInLongBreak: _isInLongBreak,
-        windowPosture: _pomodoroState.windowPosture,
-      );
-
-      await _persistFlowmodoroState();
-      await refreshAllData();
     });
   }
 
   // ==================== مدیریت کارها / اهداف (Outcomes CRUD) ====================
 
-  Future<void> saveOutcome(OutcomeItem outcome) async {
-    final existing = await DatabaseService.instance.getOutcomeById(outcome.id);
-    if (existing == null) {
-      await DatabaseService.instance.insertOutcome(outcome);
-    } else {
-      await DatabaseService.instance.updateOutcome(outcome);
-    }
-    await refreshAllData();
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-    }
+  Future<void> saveOutcome(OutcomeItem outcome) {
+    return _synchronized(() async {
+      final existing = await DatabaseService.instance.getOutcomeById(outcome.id);
+      if (existing == null) {
+        await DatabaseService.instance.insertOutcome(outcome);
+      } else {
+        await DatabaseService.instance.updateOutcome(outcome);
+      }
+      if (_activeRecord != null && _activeRecord!.outcomeId == outcome.id) {
+        _activeRecord = _activeRecord!.copyWith(
+          projectId: outcome.projectId,
+          clearProjectId: outcome.projectId == null,
+          titleSnapshot: outcome.title,
+        );
+      }
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> markOutcomeCompleted(String id) async {
-    await DatabaseService.instance.markOutcomeCompleted(id);
-    if (_previousWorkOutcomeId == id) {
-      _previousWorkOutcomeId = null;
-      _previousWorkTitle = null;
-    }
-    await refreshAllData();
+  /// انتقال مستقیم یک کار/هدف به پروژه جدید همراه با آبشار رکوردهای زمانی و یادداشت‌های متصل
+  Future<void> transferOutcome(String outcomeId, String? newProjectId) {
+    return _synchronized(() async {
+      final outcome = await DatabaseService.instance.getOutcomeById(outcomeId);
+      if (outcome == null) return;
+      final updated = outcome.copyWith(
+        projectId: newProjectId,
+        clearProjectId: newProjectId == null,
+      );
+      await DatabaseService.instance.updateOutcome(updated);
+      if (_activeRecord != null && _activeRecord!.outcomeId == outcomeId) {
+        _activeRecord = _activeRecord!.copyWith(
+          projectId: newProjectId,
+          clearProjectId: newProjectId == null,
+        );
+      }
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> reopenOutcome(String id) async {
-    await DatabaseService.instance.reopenOutcome(id);
-    await refreshAllData();
+  Future<void> markOutcomeCompleted(String id) {
+    return _synchronized(() async {
+      await DatabaseService.instance.markOutcomeCompleted(id);
+      if (_previousWorkOutcomeId == id) {
+        _previousWorkOutcomeId = null;
+        _previousWorkTitle = null;
+      }
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> deleteOutcome(String id) async {
-    await DatabaseService.instance.deleteOutcome(id);
-    if (_previousWorkOutcomeId == id) {
-      _previousWorkOutcomeId = null;
-      _previousWorkTitle = null;
-    }
-    await refreshAllData();
+  Future<void> reopenOutcome(String id) {
+    return _synchronized(() async {
+      await DatabaseService.instance.reopenOutcome(id);
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
+  }
+
+  Future<void> deleteOutcome(String id) {
+    return _synchronized(() async {
+      await DatabaseService.instance.deleteOutcome(id);
+      if (_previousWorkOutcomeId == id) {
+        _previousWorkOutcomeId = null;
+        _previousWorkTitle = null;
+      }
+      if (_activeRecord != null && _activeRecord!.outcomeId == id) {
+        _activeRecord = _activeRecord!.copyWith(clearOutcomeId: true);
+      }
+      if (_pomodoroState.activeOutcomeId == id) {
+        _pomodoroState = _pomodoroState.copyWith(clearActiveOutcome: true);
+      }
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
   // ==================== مدیریت یادداشت‌های حین کار (SessionNotes) ====================
 
-  Future<void> saveSessionNote(SessionNote note) async {
-    await DatabaseService.instance.insertSessionNote(note);
+  Future<void> saveSessionNote(SessionNote note) {
+    return _synchronized(() async {
+      await DatabaseService.instance.insertSessionNote(note);
+      _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
+      notifyListeners();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
+  }
+
+  Future<void> updateSessionNote(SessionNote note) {
+    return _synchronized(() => _updateSessionNoteUnlocked(note));
+  }
+
+  Future<void> _updateSessionNoteUnlocked(SessionNote note) async {
+    await DatabaseService.instance.updateSessionNote(note);
     _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
     notifyListeners();
     if (!isTestMode) {
       await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
     }
   }
 
-  Future<void> deleteSessionNote(String id) async {
-    await DatabaseService.instance.deleteSessionNote(id);
-    _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
-    notifyListeners();
+  Future<void> transferSessionNote({
+    required String noteId,
+    String? newProjectId,
+    String? newOutcomeId,
+  }) {
+    return _synchronized(() async {
+      final note = _sessionNotes.where((n) => n.id == noteId).firstOrNull;
+      if (note == null) return;
+      final updated = note.copyWith(
+        projectId: newProjectId,
+        clearProjectId: newProjectId == null,
+        outcomeId: newOutcomeId,
+        clearOutcomeId: newOutcomeId == null,
+      );
+      await _updateSessionNoteUnlocked(updated);
+    });
+  }
+
+  /// انتقال رکورد زمانی به پروژه یا کار دیگر
+  Future<void> transferTimeRecord({
+    required String recordId,
+    String? newProjectId,
+    String? newOutcomeId,
+  }) {
+    return _synchronized(() async {
+      final existing = await DatabaseService.instance.getTimeRecordById(recordId);
+      if (existing == null) return;
+      final updated = existing.copyWith(
+        projectId: newProjectId,
+        clearProjectId: newProjectId == null,
+        outcomeId: newOutcomeId,
+        clearOutcomeId: newOutcomeId == null,
+      );
+      await DatabaseService.instance.updateTimeRecord(updated);
+      if (_activeRecord != null && _activeRecord!.id == recordId) {
+        _activeRecord = _activeRecord!.copyWith(
+          projectId: newProjectId,
+          clearProjectId: newProjectId == null,
+          outcomeId: newOutcomeId,
+          clearOutcomeId: newOutcomeId == null,
+        );
+        _pomodoroState = _pomodoroState.copyWith(
+          activeOutcomeId: newOutcomeId,
+          clearActiveOutcome: newOutcomeId == null,
+        );
+      }
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
+  }
+
+  Future<void> deleteSessionNote(String id) {
+    return _synchronized(() async {
+      await DatabaseService.instance.deleteSessionNote(id);
+      _sessionNotes = await DatabaseService.instance.getAllSessionNotes();
+      notifyListeners();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
   Future<String?> exportSessionNotesToExcel(
@@ -2252,6 +2715,7 @@ class AppStateProvider extends ChangeNotifier {
       }
       if (!isTestMode) {
         await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
         unawaited(GCalSyncService.instance
             .syncTimeRecord(updated, projects: _projects));
       }
@@ -2263,30 +2727,32 @@ class AppStateProvider extends ChangeNotifier {
     required DateTime newStartTime,
     required DateTime newEndTime,
     String? editNote,
-  }) async {
-    final existing = await DatabaseService.instance.getTimeRecordById(id);
-    if (existing == null) return;
-    final int newDurationSec =
-        math.max(1, newEndTime.difference(newStartTime).inSeconds);
-    final tags = existing.tagIds.toList();
-    if (!tags.contains('دستی') && !tags.contains('manual')) {
-      tags.add('دستی');
-    }
+  }) {
+    return _synchronized(() async {
+      final existing = await DatabaseService.instance.getTimeRecordById(id);
+      if (existing == null) return;
+      final int newDurationSec =
+          math.max(1, newEndTime.difference(newStartTime).inSeconds);
+      final tags = existing.tagIds.toList();
+      if (!tags.contains('دستی') && !tags.contains('manual')) {
+        tags.add('دستی');
+      }
 
-    await editTimeRecordWithAudit(
-      id: id,
-      newTitle: existing.titleSnapshot,
-      newRealm: existing.realm,
-      newOutcomeId: existing.outcomeId,
-      clearOutcomeId: existing.outcomeId == null,
-      newProjectId: existing.projectId,
-      clearProjectId: existing.projectId == null,
-      newTagIds: tags,
-      newStartTime: newStartTime,
-      newEndTime: newEndTime,
-      newDurationSeconds: newDurationSec,
-      editNote: editNote ?? 'جابه‌جایی در تقویم',
-    );
+      await _editTimeRecordWithAuditUnlocked(
+        id: id,
+        newTitle: existing.titleSnapshot,
+        newRealm: existing.realm,
+        newOutcomeId: existing.outcomeId,
+        clearOutcomeId: existing.outcomeId == null,
+        newProjectId: existing.projectId,
+        clearProjectId: existing.projectId == null,
+        newTagIds: tags,
+        newStartTime: newStartTime,
+        newEndTime: newEndTime,
+        newDurationSeconds: newDurationSec,
+        editNote: editNote ?? 'جابه‌جایی در تقویم',
+      );
+    });
   }
 
   Future<void> editTimeRecordWithAudit({
@@ -2303,37 +2769,66 @@ class AppStateProvider extends ChangeNotifier {
     required int newDurationSeconds,
     String? editNote,
   }) {
-    return _synchronized(() async {
-      final beforeEdit = await DatabaseService.instance.getTimeRecordById(id);
-      final updated = await DatabaseService.instance.updateTimeRecordWithAudit(
-        id: id,
-        newTitle: newTitle,
-        newRealm: newRealm,
-        newOutcomeId: newOutcomeId,
-        clearOutcomeId: clearOutcomeId,
-        newProjectId: newProjectId,
-        clearProjectId: clearProjectId,
-        newTagIds: newTagIds,
-        newStartTime: newStartTime,
-        newEndTime: newEndTime,
-        newDurationSeconds: newDurationSeconds,
-        editNote: editNote,
-        breakRatio: _breakRatio,
-      );
+    return _synchronized(() => _editTimeRecordWithAuditUnlocked(
+          id: id,
+          newTitle: newTitle,
+          newRealm: newRealm,
+          newOutcomeId: newOutcomeId,
+          clearOutcomeId: clearOutcomeId,
+          newProjectId: newProjectId,
+          clearProjectId: clearProjectId,
+          newTagIds: newTagIds,
+          newStartTime: newStartTime,
+          newEndTime: newEndTime,
+          newDurationSeconds: newDurationSeconds,
+          editNote: editNote,
+        ));
+  }
 
-      await refreshAllData();
-      final bool wasInCycle = beforeEdit != null &&
-          (beforeEdit.endTime ?? beforeEdit.startTime)
-              .isAfter(_lastCycleResetAt);
-      if (wasInCycle || newEndTime.isAfter(_lastCycleResetAt)) {
-        await _recalculateCurrentCycleBankFromHistory();
-      }
-      if (!isTestMode) {
-        await TxtLoggerService.instance.syncTxtFile();
-        unawaited(GCalSyncService.instance
-            .syncTimeRecord(updated, projects: _projects));
-      }
-    });
+  Future<void> _editTimeRecordWithAuditUnlocked({
+    required String id,
+    required String newTitle,
+    AppRealm? newRealm,
+    String? newOutcomeId,
+    bool clearOutcomeId = false,
+    String? newProjectId,
+    bool clearProjectId = false,
+    required List<String> newTagIds,
+    required DateTime newStartTime,
+    required DateTime newEndTime,
+    required int newDurationSeconds,
+    String? editNote,
+  }) async {
+    final beforeEdit = await DatabaseService.instance.getTimeRecordById(id);
+    final updated = await DatabaseService.instance.updateTimeRecordWithAudit(
+      id: id,
+      newTitle: newTitle,
+      newRealm: newRealm,
+      newOutcomeId: newOutcomeId,
+      clearOutcomeId: clearOutcomeId,
+      newProjectId: newProjectId,
+      clearProjectId: clearProjectId,
+      newTagIds: newTagIds,
+      newStartTime: newStartTime,
+      newEndTime: newEndTime,
+      newDurationSeconds: newDurationSeconds,
+      editNote: editNote,
+      breakRatio: _breakRatio,
+    );
+
+    await refreshAllData();
+    final bool wasInCycle = beforeEdit != null &&
+        (beforeEdit.endTime ?? beforeEdit.startTime)
+            .isAfter(_lastCycleResetAt);
+    if (wasInCycle || newEndTime.isAfter(_lastCycleResetAt)) {
+      await _recalculateCurrentCycleBankFromHistory();
+    }
+    if (!isTestMode) {
+      await TxtLoggerService.instance.syncTxtFile();
+      await _syncEcosystemBridgeState(force: true);
+      unawaited(GCalSyncService.instance
+          .syncTimeRecord(updated, projects: _projects));
+    }
   }
 
   Future<void> deleteTimeRecord(String id) {
@@ -2358,11 +2853,12 @@ class AppStateProvider extends ChangeNotifier {
       }
       if (!isTestMode) {
         await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
       }
     });
   }
 
-  Future<void> createManualTimeRecord({
+  Future<TimeRecord> createManualTimeRecord({
     required AppRealm realm,
     required ClockType clockMode,
     required String title,
@@ -2416,57 +2912,150 @@ class AppStateProvider extends ChangeNotifier {
       }
       if (!isTestMode) {
         await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+      return record;
+    });
+  }
+
+  /// بازگردانی یک رکورد زمانی (استفاده در سیستم Undo)
+  Future<void> restoreTimeRecord(TimeRecord record) async {
+    return _synchronized(() async {
+      await DatabaseService.instance.insertTimeRecord(record);
+      await refreshAllData();
+      final end = record.endTime ?? record.startTime;
+      if (end.isAfter(_lastCycleResetAt)) {
+        await _recalculateCurrentCycleBankFromHistory();
+      }
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
       }
     });
   }
 
   // ==================== پروژه‌ها، تگ‌ها و تقویم ====================
 
-  Future<void> saveProject(ProjectNode project) async {
-    await DatabaseService.instance.insertProject(project);
-    await refreshAllData();
+  Future<void> saveProject(ProjectNode project) {
+    return _synchronized(() async {
+      await DatabaseService.instance.insertProject(project);
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> deleteProject(String id) async {
-    await DatabaseService.instance.deleteProject(id);
-    await refreshAllData();
+  /// ادغام اتمی پروژه‌ی مبدا (sourceId) به مقصد (targetId)
+  Future<void> mergeProject(String sourceId, String targetId) {
+    return _synchronized(() async {
+      await DatabaseService.instance.mergeProject(sourceId, targetId);
+      if (_previousWorkProjectId == sourceId) {
+        _previousWorkProjectId = targetId;
+      }
+      if (_activeRecord?.projectId == sourceId) {
+        _activeRecord = _activeRecord!.copyWith(projectId: targetId);
+      }
+      await refreshAllData();
+      notifyListeners();
+    });
   }
 
-  Future<void> savePhaseTag(PhaseTag tag) async {
-    await DatabaseService.instance.insertPhaseTag(tag);
-    await refreshAllData();
+  /// تغییر پدر یک پروژه (برای Drag & Drop نست‌کردن)
+  Future<void> setProjectParent(String projectId, String? newParentId) {
+    return _synchronized(() async {
+      final project = getProjectById(projectId);
+      if (project == null) return;
+      final updated = project.copyWith(
+        parentId: newParentId,
+        clearParentId: newParentId == null,
+      );
+      await DatabaseService.instance.updateProject(updated);
+      _projects = _projects.map((p) => p.id == projectId ? updated : p).toList();
+      notifyListeners();
+    });
   }
 
-  Future<void> deletePhaseTag(String id) async {
-    await DatabaseService.instance.deletePhaseTag(id);
-    await refreshAllData();
+  Future<void> deleteProject(String id) {
+    return _synchronized(() async {
+      final deletedIds =
+          DatabaseService.getProjectAndDescendantIds(id, _projects);
+      await DatabaseService.instance.deleteProject(id);
+      if (deletedIds.contains(_previousWorkProjectId)) {
+        _previousWorkProjectId = null;
+      }
+      if (_activeRecord != null &&
+          deletedIds.contains(_activeRecord!.projectId)) {
+        _activeRecord = _activeRecord!.copyWith(clearProjectId: true);
+      }
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> saveScheduledBlock(ScheduledBlock block) async {
-    await DatabaseService.instance.insertScheduledBlock(block);
-    if (!isTestMode) {
-      unawaited(GCalSyncService.instance.pushScheduledBlockToGCal(block).then((ok) {
-        if (ok) refreshAllData();
-      }));
-    }
-    await refreshAllData();
+  Future<void> savePhaseTag(PhaseTag tag) {
+    return _synchronized(() async {
+      await DatabaseService.instance.insertPhaseTag(tag);
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> deleteScheduledBlock(String id) async {
-    await DatabaseService.instance.deleteScheduledBlock(id);
-    await refreshAllData();
+  Future<void> deletePhaseTag(String id) {
+    return _synchronized(() async {
+      await DatabaseService.instance.deletePhaseTag(id);
+      await refreshAllData();
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+    });
   }
 
-  Future<void> syncGoogleCalendar() async {
-    final now = DateTime.now();
-    final minDate = now.subtract(const Duration(days: 14));
-    final maxDate = now.add(const Duration(days: 14));
-    await GCalSyncService.instance.fetchScheduledBlocksFromGCal(
-      timeMin: minDate,
-      timeMax: maxDate,
-      projects: _projects,
-    );
-    await refreshAllData();
+  Future<void> saveScheduledBlock(ScheduledBlock block) {
+    return _synchronized(() async {
+      await DatabaseService.instance.insertScheduledBlock(block);
+      await refreshAllData();
+      if (!isTestMode) {
+        unawaited(
+          GCalSyncService.instance
+              .pushScheduledBlockToGCal(block)
+              .then((ok) async {
+            if (ok) {
+              await _synchronized(() => refreshAllData());
+            }
+          }),
+        );
+      }
+    });
+  }
+
+  Future<void> deleteScheduledBlock(String id) {
+    return _synchronized(() async {
+      await DatabaseService.instance.deleteScheduledBlock(id);
+      await refreshAllData();
+    });
+  }
+
+  Future<void> syncGoogleCalendar() {
+    return _synchronized(() async {
+      final now = DateTime.now();
+      final minDate = now.subtract(const Duration(days: 14));
+      final maxDate = now.add(const Duration(days: 14));
+      await GCalSyncService.instance.fetchScheduledBlocksFromGCal(
+        timeMin: minDate,
+        timeMax: maxDate,
+        projects: _projects,
+      );
+      await refreshAllData();
+    });
   }
 
   // ==================== تنظیمات ====================
@@ -2478,61 +3067,69 @@ class AppStateProvider extends ChangeNotifier {
     int? breakRatio,
     int? cycleWorkTargetMinutes,
     int? cycleAutoResetMinutes,
-  }) async {
-    _focusDurationMinutes = focusMinutes.clamp(1, 240);
-    _shortBreakDurationMinutes = shortBreakMinutes.clamp(1, 60);
-    _longBreakDurationMinutes = longBreakMinutes.clamp(5, 240);
-    if (breakRatio != null) {
-      _breakRatio = breakRatio.clamp(1, 20);
-    }
-    if (cycleWorkTargetMinutes != null) {
-      _cycleWorkTargetMinutes = cycleWorkTargetMinutes.clamp(10, 600);
-    }
-    if (cycleAutoResetMinutes != null) {
-      _cycleAutoResetMinutes = cycleAutoResetMinutes.clamp(15, 600);
-    }
+  }) {
+    return _synchronized(() async {
+      _focusDurationMinutes = focusMinutes.clamp(1, 240);
+      _shortBreakDurationMinutes = shortBreakMinutes.clamp(1, 60);
+      _longBreakDurationMinutes = longBreakMinutes.clamp(5, 240);
+      if (breakRatio != null) {
+        _breakRatio = breakRatio.clamp(1, 20);
+      }
+      if (cycleWorkTargetMinutes != null) {
+        _cycleWorkTargetMinutes = cycleWorkTargetMinutes.clamp(10, 600);
+      }
+      if (cycleAutoResetMinutes != null) {
+        _cycleAutoResetMinutes = cycleAutoResetMinutes.clamp(15, 600);
+      }
 
-    final db = DatabaseService.instance;
-    await Future.wait([
-      db.setSetting(AppDefaults.settingKeyFocusDuration,
-          _focusDurationMinutes.toString()),
-      db.setSetting(AppDefaults.settingKeyShortBreakDuration,
-          _shortBreakDurationMinutes.toString()),
-      db.setSetting(AppDefaults.settingKeyLongBreakDuration,
-          _longBreakDurationMinutes.toString()),
-      db.setSetting(AppDefaults.settingKeyBreakRatio, _breakRatio.toString()),
-      db.setSetting(AppDefaults.settingKeyCycleWorkTargetMinutes,
-          _cycleWorkTargetMinutes.toString()),
-      db.setSetting(AppDefaults.settingKeyCycleAutoResetMinutes,
-          _cycleAutoResetMinutes.toString()),
-    ]);
+      final db = DatabaseService.instance;
+      await Future.wait([
+        db.setSetting(AppDefaults.settingKeyFocusDuration,
+            _focusDurationMinutes.toString()),
+        db.setSetting(AppDefaults.settingKeyShortBreakDuration,
+            _shortBreakDurationMinutes.toString()),
+        db.setSetting(AppDefaults.settingKeyLongBreakDuration,
+            _longBreakDurationMinutes.toString()),
+        db.setSetting(
+            AppDefaults.settingKeyBreakRatio, _breakRatio.toString()),
+        db.setSetting(AppDefaults.settingKeyCycleWorkTargetMinutes,
+            _cycleWorkTargetMinutes.toString()),
+        db.setSetting(AppDefaults.settingKeyCycleAutoResetMinutes,
+            _cycleAutoResetMinutes.toString()),
+      ]);
 
-    _pomodoroState = _pomodoroState.copyWith(
-      cycleWorkTargetSeconds: _cycleWorkTargetMinutes * 60,
-      targetSeconds: (_pomodoroState.status == TimerStatus.idle &&
-              !_pomodoroState.isStopwatch)
-          ? _focusDurationMinutes * 60
-          : _pomodoroState.targetSeconds,
-    );
-    notifyListeners();
+      _pomodoroState = _pomodoroState.copyWith(
+        cycleWorkTargetSeconds: _cycleWorkTargetMinutes * 60,
+        targetSeconds: (_pomodoroState.status == TimerStatus.idle &&
+                !_pomodoroState.isStopwatch)
+            ? _focusDurationMinutes * 60
+            : _pomodoroState.targetSeconds,
+      );
+      notifyListeners();
+    });
   }
 
-  Future<void> updateTxtLogPath(String newPath) async {
-    if (newPath.trim().isEmpty) return;
-    _txtLogPath = newPath.trim();
-    await DatabaseService.instance
-        .setSetting(AppDefaults.settingKeyTxtPath, _txtLogPath);
-    if (!isTestMode) {
-      await TxtLoggerService.instance.syncTxtFile();
-    }
-    notifyListeners();
+  Future<void> updateTxtLogPath(String newPath) {
+    return _synchronized(() async {
+      if (newPath.trim().isEmpty) return;
+      _txtLogPath = newPath.trim();
+      await DatabaseService.instance
+          .setSetting(AppDefaults.settingKeyTxtPath, _txtLogPath);
+      if (!isTestMode) {
+        await TxtLoggerService.instance.syncTxtFile();
+        await _syncEcosystemBridgeState(force: true);
+      }
+      notifyListeners();
+    });
   }
 
-  Future<void> updateGCalToken(String token) async {
-    _gcalToken = token.trim();
-    await DatabaseService.instance
-        .setSetting(AppDefaults.settingKeyGCalToken, _gcalToken);
-    notifyListeners();
+  Future<void> updateGCalToken(String token) {
+    return _synchronized(() async {
+      _gcalToken = token.trim();
+      await DatabaseService.instance
+          .setSetting(AppDefaults.settingKeyGCalToken, _gcalToken);
+      notifyListeners();
+    });
   }
 
   Future<void> updateGCalCalendars({
@@ -2541,28 +3138,70 @@ class AppStateProvider extends ChangeNotifier {
     required String lifePlanId,
     required String workLogId,
     required String lifeLogId,
-  }) async {
-    _gcalToken = token.trim();
-    _workPlanCalendarId =
-        workPlanId.trim().isEmpty ? 'primary' : workPlanId.trim();
-    _lifePlanCalendarId = lifePlanId.trim();
-    _workLogCalendarId =
-        workLogId.trim().isEmpty ? 'primary' : workLogId.trim();
-    _lifeLogCalendarId = lifeLogId.trim();
+  }) {
+    return _synchronized(() async {
+      _gcalToken = token.trim();
+      _workPlanCalendarId =
+          workPlanId.trim().isEmpty ? 'primary' : workPlanId.trim();
+      _lifePlanCalendarId = lifePlanId.trim();
+      _workLogCalendarId =
+          workLogId.trim().isEmpty ? 'primary' : workLogId.trim();
+      _lifeLogCalendarId = lifeLogId.trim();
 
-    final db = DatabaseService.instance;
-    await Future.wait([
-      db.setSetting(AppDefaults.settingKeyGCalToken, _gcalToken),
-      db.setSetting(
-          AppDefaults.settingKeyPlanCalendarId, _workPlanCalendarId),
-      db.setSetting(
-          AppDefaults.settingKeyLifePlanCalendarId, _lifePlanCalendarId),
-      db.setSetting(
-          AppDefaults.settingKeyWorkLogCalendarId, _workLogCalendarId),
-      db.setSetting(
-          AppDefaults.settingKeyLifeLogCalendarId, _lifeLogCalendarId),
-    ]);
+      final db = DatabaseService.instance;
+      await Future.wait([
+        db.setSetting(AppDefaults.settingKeyGCalToken, _gcalToken),
+        db.setSetting(
+            AppDefaults.settingKeyPlanCalendarId, _workPlanCalendarId),
+        db.setSetting(
+            AppDefaults.settingKeyLifePlanCalendarId, _lifePlanCalendarId),
+        db.setSetting(
+            AppDefaults.settingKeyWorkLogCalendarId, _workLogCalendarId),
+        db.setSetting(
+            AppDefaults.settingKeyLifeLogCalendarId, _lifeLogCalendarId),
+      ]);
+      notifyListeners();
+    });
+  }
+
+  Future<void> setLifeNatureSlideshowEnabled(bool value) {
+    return _synchronized(() async {
+      _isLifeNatureSlideshowEnabled = value;
+      await DatabaseService.instance.setSetting(
+        AppDefaults.settingKeyLifeNatureSlideshowEnabled,
+        value ? '1' : '0',
+      );
+      if (!value) {
+        await dismissNatureSlideshow();
+      } else if (_pomodoroState.isLife) {
+        await activateNatureSlideshow();
+      }
+      notifyListeners();
+    });
+  }
+
+  Future<void> activateNatureSlideshow() async {
+    if (!_isLifeNatureSlideshowEnabled) return;
+    _isNatureSlideshowDismissed = false;
+    _preSlideshowPosture = _pomodoroState.windowPosture;
+    if (!isTestMode) {
+      await NatureAmbienceService.instance.play();
+      await PlatformHelper.enterLifeSlideshowMode();
+    }
     notifyListeners();
+  }
+
+  Future<void> dismissNatureSlideshow() async {
+    _isNatureSlideshowDismissed = true;
+    final WindowPosture targetPosture =
+        _preSlideshowPosture ?? _pomodoroState.windowPosture;
+    _preSlideshowPosture = null;
+    _pomodoroState = _pomodoroState.copyWith(windowPosture: targetPosture);
+    notifyListeners();
+    if (!isTestMode) {
+      await NatureAmbienceService.instance.stop();
+      await PlatformHelper.exitLifeSlideshowMode(targetPosture);
+    }
   }
 
   Future<String?> exportRecordsToExcel(List<TimeRecord> filteredRecords) async {
@@ -2577,6 +3216,9 @@ class AppStateProvider extends ChangeNotifier {
   @override
   void dispose() {
     _ticker?.cancel();
+    if (!isTestMode) {
+      EcosystemBridgeService.instance.stopDatabaseWatcher();
+    }
     WorkNoteWindowCoordinator.instance.removeOnNoteAddedListener(
       _onExternalSessionNoteAdded,
     );
